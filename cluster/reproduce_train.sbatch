@@ -3,13 +3,15 @@
 
 #SBATCH --job-name=simtoolreal-train
 #SBATCH --partition=batch
-#SBATCH --gres=gpu:l40s:1
+#SBATCH --gres=gpu:1
 #SBATCH --qos=normal
+#SBATCH --nice=200
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --time=1-00:00:00
 #SBATCH --output=outputs/slurm_logs/simtoolreal-train/%j.out
 #SBATCH --error=outputs/slurm_logs/simtoolreal-train/%j.err
+#SBATCH --exclude=dj-2080ti-0.grasp.maas,kd-2080ti-1.grasp.maas,kd-2080ti-2.grasp.maas,kd-2080ti-3.grasp.maas,kd-2080ti-4.grasp.maas,mp-2080ti-0.grasp.maas,slurm-dev.grasp.maas,enough-oryx.grasp.maas
 
 set -euo pipefail
 
@@ -24,7 +26,7 @@ WORKTREE_BASE="${REPO_DIR}/outputs/worktrees"
 # Training knobs.
 CUSTOM_EXPERIMENT_NAME="${CUSTOM_EXPERIMENT_NAME:-reproduce}"
 SEED="${SEED:-0}"
-NUM_ENVS="${NUM_ENVS:-24576}"
+NUM_ENVS="${NUM_ENVS:-12288}"
 NUM_BLOCKS="${NUM_BLOCKS:-6}"
 FORCE_SCALE="${FORCE_SCALE:-20}"
 TORQUE_SCALE="${TORQUE_SCALE:-2.0}"
@@ -59,7 +61,7 @@ if [[ -n "${CODE_COMMIT_HASH}" ]]; then
 fi
 
 cd "${PRJ_DIR}"
-source .venv/bin/activate
+source "${REPO_DIR}/.venv/bin/activate"
 
 export PYTHONPATH="${PRJ_DIR}:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
