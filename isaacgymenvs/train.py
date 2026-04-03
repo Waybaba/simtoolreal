@@ -310,6 +310,13 @@ if __name__ == "__main__":
             cfg_n_env = launch_rlg_hydra(cfg, vec_env)
             if not isinstance(cfg_n_env, tuple):
                 break
+
+            # rl_games returns tuples like (last_mean_rewards, epoch_num) when
+            # training exits normally. Only treat a tuple as a restart request
+            # when it actually carries a vec env wrapper back from PBT logic.
+            if len(cfg_n_env) != 2 or not hasattr(cfg_n_env[1], "change_on_restart"):
+                break
+
             cfg, vec_env = cfg_n_env
             vec_env.change_on_restart(omegaconf_to_dict(cfg.task))
 

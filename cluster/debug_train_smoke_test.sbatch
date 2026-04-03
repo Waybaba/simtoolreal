@@ -1,21 +1,20 @@
 #!/bin/bash
-#SBATCH --job-name=simtoolreal-smoke
+#SBATCH --job-name=simtoolreal-train-smoke
 #SBATCH --partition=aloque-compute
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --qos=al-high-8gpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=00:15:00
-#SBATCH --output=outputs/slurm_logs/simtoolreal-smoke/%j.out
-#SBATCH --error=outputs/slurm_logs/simtoolreal-smoke/%j.err
+#SBATCH --time=00:20:00
+#SBATCH --output=outputs/slurm_logs/simtoolreal-train-smoke/%j.out
+#SBATCH --error=outputs/slurm_logs/simtoolreal-train-smoke/%j.err
 
 set -euo pipefail
 
 REPO_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-ISAACGYM_PYTHON_DIR="/mnt/aloque_scratch/wang100/data/isaacgym/isaacgym/python"
 COMPILER_DIR="${REPO_DIR}/.compiler"
 
-mkdir -p "${REPO_DIR}/outputs/slurm_logs/simtoolreal-smoke"
+mkdir -p "${REPO_DIR}/outputs/slurm_logs/simtoolreal-train-smoke"
 cd "${REPO_DIR}"
 
 source .venv/bin/activate
@@ -38,21 +37,20 @@ echo "[job] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "[job] gcc=$(${CC} --version | head -n 1)"
 
 mkdir -p "${TORCH_EXTENSIONS_DIR}"
-
 nvidia-smi || true
 
-if [[ ! -d "${ISAACGYM_PYTHON_DIR}" ]]; then
-  echo "[job] missing Isaac Gym path: ${ISAACGYM_PYTHON_DIR}" >&2
-  exit 1
-fi
-
-python -c "import isaacgym; print('[job] isaacgym import ok')"
-
-python cluster/headless_smoke_test.py \
-  --config-path pretrained_policy/config.yaml \
-  --checkpoint-path pretrained_policy/model.pth \
-  --object-category hammer \
-  --object-name claw_hammer \
-  --task-name swing_down \
-  --num-steps 5 \
-  --headless
+python cluster/train_smoke_test.py \
+  headless=True \
+  task=SimToolReal \
+  num_envs=64 \
+  wandb_activate=False \
+  force_render=False \
+  capture_video=False \
+  hydra.run.dir=./outputs/train_smoke/$(date +%Y%m%d_%H%M%S) \
+  experiment=00_smoke_train \
+  train.params.config.max_epochs=1 \
+  train.params.config.horizon_length=4 \
+  train.params.config.minibatch_size=256 \
+  train.params.config.mini_epochs=1 \
+  train.params.config.save_frequency=1 \
+  train.params.config.save_best_after=0

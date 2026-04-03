@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=simtoolreal-smoke
+#SBATCH --job-name=simtoolreal-video
 #SBATCH --partition=aloque-compute
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --qos=al-high-8gpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=00:15:00
-#SBATCH --output=outputs/slurm_logs/simtoolreal-smoke/%j.out
-#SBATCH --error=outputs/slurm_logs/simtoolreal-smoke/%j.err
+#SBATCH --time=00:20:00
+#SBATCH --output=outputs/slurm_logs/simtoolreal-video/%j.out
+#SBATCH --error=outputs/slurm_logs/simtoolreal-video/%j.err
 
 set -euo pipefail
 
@@ -15,7 +15,8 @@ REPO_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ISAACGYM_PYTHON_DIR="/mnt/aloque_scratch/wang100/data/isaacgym/isaacgym/python"
 COMPILER_DIR="${REPO_DIR}/.compiler"
 
-mkdir -p "${REPO_DIR}/outputs/slurm_logs/simtoolreal-smoke"
+mkdir -p "${REPO_DIR}/outputs/slurm_logs/simtoolreal-video"
+mkdir -p "${REPO_DIR}/outputs/videos"
 cd "${REPO_DIR}"
 
 source .venv/bin/activate
@@ -38,7 +39,6 @@ echo "[job] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "[job] gcc=$(${CC} --version | head -n 1)"
 
 mkdir -p "${TORCH_EXTENSIONS_DIR}"
-
 nvidia-smi || true
 
 if [[ ! -d "${ISAACGYM_PYTHON_DIR}" ]]; then
@@ -46,13 +46,13 @@ if [[ ! -d "${ISAACGYM_PYTHON_DIR}" ]]; then
   exit 1
 fi
 
-python -c "import isaacgym; print('[job] isaacgym import ok')"
-
-python cluster/headless_smoke_test.py \
+python cluster/export_headless_video.py \
   --config-path pretrained_policy/config.yaml \
   --checkpoint-path pretrained_policy/model.pth \
   --object-category hammer \
   --object-name claw_hammer \
   --task-name swing_down \
-  --num-steps 5 \
-  --headless
+  --video-length 60 \
+  --max-steps 240 \
+  --headless \
+  --output-dir "${REPO_DIR}/outputs/videos"
