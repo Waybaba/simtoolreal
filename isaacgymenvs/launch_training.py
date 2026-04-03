@@ -39,8 +39,36 @@ class LaunchTrainingArgs:
     num_blocks: int = 6
     """Number of SAPG blocks."""
 
+    max_epochs: Optional[int] = None
+    """Optional max epochs override for short debug runs."""
+
+    horizon_length: Optional[int] = None
+    """Optional horizon length override."""
+
+    minibatch_size: Optional[int] = None
+    """Optional minibatch size override."""
+
+    mini_epochs: Optional[int] = None
+    """Optional number of PPO mini epochs override."""
+
+    save_frequency: Optional[int] = None
+    """Optional checkpoint save frequency override."""
+
+    seq_length: Optional[int] = None
+    """Optional RNN sequence length override."""
+
+    # === Video ===
+    capture_video: bool = True
+    """Whether to capture periodic rollout videos during training."""
+
+    capture_video_freq: int = 6000
+    """Capture a video every N control steps."""
+
+    capture_video_len: int = 600
+    """Number of frames per captured video."""
+
     # === Wandb ===
-    wandb_entity: str = "tylerlum"
+    wandb_entity: str = "waybabag"
     """Wandb entity (user or team)."""
 
     wandb_project: str = "simtoolreal"
@@ -57,6 +85,13 @@ class LaunchTrainingArgs:
 
     wandb_notes: str = ""
     """Wandb notes."""
+
+    wandb_logcode_dir: str = "."
+    """Directory to snapshot into WandB as code."""
+
+    # === Outputs ===
+    output_root: str = "./outputs/train_dir"
+    """Root directory for Hydra training outputs."""
 
     @property
     def sapg_block_size(self) -> int:
@@ -75,7 +110,7 @@ def launch_training(args: LaunchTrainingArgs) -> None:
     )  # Add this to avoid overwriting existing experiments
     experiment_name = f"{args.custom_experiment_name}_{now}"
     hydra_run_dir = (
-        f"./train_dir/{args.wandb_project}/{args.wandb_group}/{experiment_name}"
+        f"{args.output_root}/{args.wandb_project}/{args.wandb_group}/{experiment_name}"
     )
 
     wandb_tags_str = "[" + ",".join(args.wandb_tags) + "]"
@@ -106,11 +141,15 @@ def launch_training(args: LaunchTrainingArgs) -> None:
         f"wandb_group={args.wandb_group}",
         f"wandb_tags={wandb_tags_str}",
         f"++wandb_notes='{args.wandb_notes}'",
+        f"wandb_logcode_dir={args.wandb_logcode_dir}",
         # === Seed ===
         f"seed={args.seed}",
         # === Experiment ===
         f"experiment=00_{experiment_name}",
         f"hydra.run.dir={hydra_run_dir}",
+        f"capture_video={args.capture_video}",
+        f"capture_video_freq={args.capture_video_freq}",
+        f"capture_video_len={args.capture_video_len}",
         "task=SimToolRealLSTMAsymmetric",
         "task.env.objectScaleNoiseMultiplierRange=[0.9,1.1]",
         "task.env.forceConsecutiveNearGoalSteps=True",
@@ -121,6 +160,25 @@ def launch_training(args: LaunchTrainingArgs) -> None:
 
     if args.checkpoint is not None:
         cmd_parts.append(f"checkpoint={args.checkpoint}")
+
+    if args.max_epochs is not None:
+        cmd_parts.append(f"train.params.config.max_epochs={args.max_epochs}")
+    if args.horizon_length is not None:
+        cmd_parts.append(f"train.params.config.horizon_length={args.horizon_length}")
+    if args.minibatch_size is not None:
+        cmd_parts.append(f"train.params.config.minibatch_size={args.minibatch_size}")
+        cmd_parts.append(
+            f"train.params.config.central_value_config.minibatch_size={args.minibatch_size}"
+        )
+    if args.mini_epochs is not None:
+        cmd_parts.append(f"train.params.config.mini_epochs={args.mini_epochs}")
+        cmd_parts.append(
+            f"train.params.config.central_value_config.mini_epochs={args.mini_epochs}"
+        )
+    if args.save_frequency is not None:
+        cmd_parts.append(f"train.params.config.save_frequency={args.save_frequency}")
+    if args.seq_length is not None:
+        cmd_parts.append(f"train.params.config.seq_length={args.seq_length}")
 
     cmd = " ".join(cmd_parts)
     print(f"Running command:\n{cmd}")
