@@ -33,8 +33,8 @@ class LaunchTrainingArgs:
     """Object angular velocity penalty scale."""
 
     # === SAPG ===
-    num_envs: int = 24576
-    """Number of environments. Reduce this to 12288 if you run out of GPU memory."""
+    num_envs: int = 12288 # ! used to be 24576 in original repo
+    """Number of environments. Increase to 24576 on larger GPUs if memory allows."""
 
     num_blocks: int = 6
     """Number of SAPG blocks."""
@@ -147,9 +147,11 @@ def launch_training(args: LaunchTrainingArgs) -> None:
         # === Experiment ===
         f"experiment=00_{experiment_name}",
         f"hydra.run.dir={hydra_run_dir}",
-        f"capture_video={args.capture_video}",
-        f"capture_video_freq={args.capture_video_freq}",
-        f"capture_video_len={args.capture_video_len}",
+        # Keep Gym's RecordVideo wrapper disabled in headless runs; it requires Xvfb.
+        "capture_video=False",
+        f"task.env.capture_video={args.capture_video}",
+        f"task.env.capture_video_freq={args.capture_video_freq}",
+        f"task.env.capture_video_len={args.capture_video_len}",
         "task=SimToolRealLSTMAsymmetric",
         "task.env.objectScaleNoiseMultiplierRange=[0.9,1.1]",
         "task.env.forceConsecutiveNearGoalSteps=True",

@@ -39,6 +39,20 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from isaacgymenvs.utils.reformat import omegaconf_to_dict
 
 
+def patch_rl_games_safe_symlink():
+    """Avoid retrying when replacing a best-checkpoint symlink that does not exist yet."""
+    from rl_games.algos_torch import torch_ext
+
+    def safe_symlink(src, dst):
+        try:
+            os.remove(dst)
+        except FileNotFoundError:
+            pass
+        torch_ext.safe_filesystem_op(os.symlink, src, dst)
+
+    torch_ext.safe_symlink = safe_symlink
+
+
 def preprocess_train_config(cfg, config_dict):
     """
     Adding common configuration parameters to the rl_games train config.
@@ -115,6 +129,8 @@ def launch_rlg_hydra(cfg: DictConfig, vec_env=None):
 
     from rl_games.common import env_configurations, vecenv
     from rl_games.torch_runner import Runner
+
+    patch_rl_games_safe_symlink()
 
     import isaacgymenvs
     from isaacgymenvs.utils.rlgames_utils import (
