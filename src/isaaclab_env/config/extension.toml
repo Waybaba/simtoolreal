@@ -1,0 +1,8 @@
+[package]
+version = "0.1.0"
+title = "isaaclab_env"
+description = "Custom Isaac Lab tasks for the SimToolReal repository."
+category = "Simulation"
+
+[[python.module]]
+name = "isaaclab_env"
