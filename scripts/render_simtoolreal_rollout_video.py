@@ -43,9 +43,17 @@ class RolloutAppLauncher(AppLauncher):
 parser = argparse.ArgumentParser(description="Render a random-policy SimToolReal rollout mp4.")
 parser.add_argument("--task", type=str, default="SimToolReal-Direct-Debug-v0", help="Gym task ID to render.")
 parser.add_argument("--num_envs", type=int, default=2, help="Number of environments.")
-parser.add_argument("--steps", type=int, default=120, help="Number of rollout/render steps.")
+parser.add_argument("--steps", type=int, default=180, help="Number of rollout/render steps.")
 parser.add_argument("--fps", type=int, default=30, help="Output video FPS.")
-parser.add_argument("--action_scale", type=float, default=0.35, help="Uniform random action range multiplier.")
+parser.add_argument("--action_scale", type=float, default=1.0, help="Uniform random action range multiplier.")
+parser.add_argument("--hold_steps", type=int, default=24, help="Number of frames to hold each sampled random action.")
+parser.add_argument("--warmup_frames", type=int, default=20, help="Render frames to discard before writing the mp4.")
+parser.add_argument("--post_step_renders", type=int, default=2, help="Fresh render calls after each env step before reading RGB.")
+parser.add_argument(
+    "--no_motion_boost",
+    action="store_true",
+    help="Keep env control smoothing/delay unchanged. By default, render rollout is boosted to make motion visible.",
+)
 parser.add_argument(
     "--output",
     type=Path,
@@ -93,6 +101,17 @@ def _set_camera(env) -> tuple[list[float], list[float]]:
     return eye.tolist(), target.tolist()
 
 
+def _capture_rgb_frame(env) -> np.ndarray:
+    for _ in range(max(1, args_cli.post_step_renders)):
+        env.unwrapped.sim.render()
+    frame = np.asarray(env.render())
+    if frame.size == 0:
+        raise RuntimeError("env.render() returned an empty frame.")
+    if frame.dtype != np.uint8:
+        frame = np.clip(frame, 0, 255).astype(np.uint8)
+    return frame
+
+
 def main() -> None:
     torch.manual_seed(args_cli.seed)
     np.random.seed(args_cli.seed)
@@ -108,25 +127,58 @@ def main() -> None:
     env_cfg.seed = args_cli.seed
     env_cfg.viewer.resolution = (1280, 720)
     env_cfg.viewer.cam_prim_path = "/OmniverseKit_Persp"
+    if not args_cli.no_motion_boost:
+        env_cfg.use_action_delay = False
+        env_cfg.dof_speed_scale = 4.0
+        env_cfg.arm_moving_average = 0.6
+        env_cfg.hand_moving_average = 0.6
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
     try:
         env.reset(seed=args_cli.seed)
         eye, target = _set_camera(env)
         args_cli.output.parent.mkdir(parents=True, exist_ok=True)
+        zero_actions = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
+        with torch.inference_mode():
+            for _ in range(args_cli.warmup_frames):
+                env.step(zero_actions)
+                _capture_rgb_frame(env)
+
+        start_joint_pos = env.unwrapped.robot.data.joint_pos[:, env.unwrapped.actuated_joint_ids].clone()
+        start_target = env.unwrapped.cur_targets.clone()
+        start_object_pos = env.unwrapped.object.data.root_pos_w.clone()
+        start_body_pos = env.unwrapped.robot.data.body_pos_w[:, env.unwrapped.fingertip_body_ids + [env.unwrapped.palm_body_id]].clone()
+        max_abs_action = 0.0
+
         with imageio.get_writer(str(args_cli.output), fps=args_cli.fps, macro_block_size=1) as writer:
             with torch.inference_mode():
-                for _ in range(args_cli.steps):
-                    actions = (2.0 * torch.rand(env.action_space.shape, device=env.unwrapped.device) - 1.0) * args_cli.action_scale
+                actions = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
+                for step in range(args_cli.steps):
+                    if step % args_cli.hold_steps == 0:
+                        actions = (
+                            2.0 * torch.rand(env.action_space.shape, device=env.unwrapped.device) - 1.0
+                        ) * args_cli.action_scale
+                    max_abs_action = max(max_abs_action, float(actions.abs().max().item()))
                     env.step(actions)
-                    frame = np.asarray(env.render())
-                    if frame.size == 0:
-                        raise RuntimeError("env.render() returned an empty frame.")
-                    if frame.dtype != np.uint8:
-                        frame = np.clip(frame, 0, 255).astype(np.uint8)
-                    writer.append_data(frame)
+                    writer.append_data(_capture_rgb_frame(env))
+
+        joint_delta = (env.unwrapped.robot.data.joint_pos[:, env.unwrapped.actuated_joint_ids] - start_joint_pos).abs()
+        target_delta = (env.unwrapped.cur_targets - start_target).abs()
+        object_delta = (env.unwrapped.object.data.root_pos_w - start_object_pos).abs()
+        body_delta = (
+            env.unwrapped.robot.data.body_pos_w[:, env.unwrapped.fingertip_body_ids + [env.unwrapped.palm_body_id]] - start_body_pos
+        ).abs()
         print(f"[ROLLOUT] saved={args_cli.output}", flush=True)
         print(f"[ROLLOUT] camera_eye={eye} camera_target={target}", flush=True)
+        print(
+            "[ROLLOUT] "
+            f"max_abs_action={max_abs_action:.4f} "
+            f"joint_delta_max={float(joint_delta.max().item()):.6f} "
+            f"target_delta_max={float(target_delta.max().item()):.6f} "
+            f"body_delta_max={float(body_delta.max().item()):.6f} "
+            f"object_delta_max={float(object_delta.max().item()):.6f}",
+            flush=True,
+        )
     finally:
         env.close()
 
