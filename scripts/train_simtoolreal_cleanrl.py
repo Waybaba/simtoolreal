@@ -126,6 +126,13 @@ parser.add_argument("--capture_video_len", type=int, default=600, help="Number o
 parser.add_argument("--capture_video_env_id", type=int, default=0, help="Env id viewed by the training video camera.")
 parser.add_argument("--capture_video_start_on_reset", action=argparse.BooleanOptionalAction, default=True, help="Match old behavior: arm capture at the cadence, then start recording when the viewed env resets.")
 parser.add_argument("--video_fps", type=int, default=0, help="0 matches the old env video fps: int(1 / control_dt).")
+parser.add_argument("--trajectory_log", action=argparse.BooleanOptionalAction, default=True, help="Write replay-friendly robot/object pose logs during training video windows.")
+parser.add_argument("--trajectory_log_max_envs", type=int, default=4, help="Maximum number of envs to include in each trajectory log.")
+parser.add_argument("--trajectory_log_selection", choices=("first_line", "first", "random"), default="first_line", help="How to choose envs for trajectory logging.")
+parser.add_argument("--trajectory_log_every", type=int, default=1, help="Write one trajectory frame every N control steps while logging is active.")
+parser.add_argument("--trajectory_log_max_frames", type=int, default=600, help="Hard cap on JSONL frames per trajectory segment.")
+parser.add_argument("--trajectory_log_include_obs", action=argparse.BooleanOptionalAction, default=True, help="Include sampled policy/critic observations in trajectory frames.")
+parser.add_argument("--trajectory_log_seed", type=int, default=None, help="Seed for random trajectory env sampling. Defaults to --seed.")
 
 # Common task overrides used by the old launch helper.
 parser.add_argument("--object_scale_noise_min", type=float, default=0.9)
@@ -178,6 +185,7 @@ class TrainStats:
     learning_rate: float
     sigma_mean: float
     video_path: str | None = None
+    trajectory_log_path: str | None = None
 
 
 class RunningMeanStd(nn.Module):
@@ -665,6 +673,400 @@ def _video_fps(env, args: argparse.Namespace) -> int:
     return int(round(1.0 / env.unwrapped.control_dt))
 
 
+def _relpath(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _tolist(value: torch.Tensor | Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu()
+        if value.ndim == 0:
+            return float(value.item())
+        return value.tolist()
+    return value
+
+
+def _pose_from_state(root_state: torch.Tensor) -> dict[str, Any]:
+    return {
+        "pos": _tolist(root_state[:3]),
+        "quat_wxyz": _tolist(root_state[3:7]),
+        "lin_vel": _tolist(root_state[7:10]),
+        "ang_vel": _tolist(root_state[10:13]),
+    }
+
+
+def _variant_to_dict(variant: Any) -> dict[str, Any]:
+    return {
+        "object_type": variant.object_type,
+        "urdf_path": str(variant.urdf_path),
+        "urdf_path_repo": _relpath(variant.urdf_path),
+        "usd_path": str(variant.usd_path),
+        "usd_path_repo": _relpath(variant.usd_path),
+        "object_scale": list(variant.object_scale),
+        "handle_scale": list(variant.handle_scale),
+        "head_scale": None if variant.head_scale is None else list(variant.head_scale),
+        "handle_density": variant.handle_density,
+        "head_density": variant.head_density,
+        "mass": variant.mass,
+        "center_of_mass": list(variant.center_of_mass),
+        "diagonal_inertia": list(variant.diagonal_inertia),
+    }
+
+
+def _sample_trajectory_env_ids(env, args: argparse.Namespace) -> list[int]:
+    unwrapped = env.unwrapped
+    num_envs = int(unwrapped.num_envs)
+    max_envs = min(max(1, args.trajectory_log_max_envs), num_envs)
+    if args.trajectory_log_selection == "first":
+        return list(range(max_envs))
+
+    if args.trajectory_log_selection == "random":
+        rng = random.Random(args.trajectory_log_seed if args.trajectory_log_seed is not None else args.seed)
+        return sorted(rng.sample(range(num_envs), k=max_envs))
+
+    origins = unwrapped.scene.env_origins[:num_envs].detach().cpu()
+    spacing = float(getattr(unwrapped.cfg.scene, "env_spacing", 1.0))
+    tol = max(1.0e-4, 0.05 * spacing)
+
+    y = origins[:, 1]
+    first_y = y.min()
+    row_ids = torch.nonzero(torch.abs(y - first_y) <= tol, as_tuple=False).flatten()
+    if row_ids.numel() >= min(2, max_envs):
+        row_origins = origins[row_ids]
+        order = torch.argsort(row_origins[:, 0])
+        return [int(index) for index in row_ids[order[:max_envs]].tolist()]
+
+    x = origins[:, 0]
+    first_x = x.min()
+    col_ids = torch.nonzero(torch.abs(x - first_x) <= tol, as_tuple=False).flatten()
+    if col_ids.numel() >= min(2, max_envs):
+        col_origins = origins[col_ids]
+        order = torch.argsort(col_origins[:, 1])
+        return [int(index) for index in col_ids[order[:max_envs]].tolist()]
+
+    rng = random.Random(args.trajectory_log_seed if args.trajectory_log_seed is not None else args.seed)
+    return sorted(rng.sample(range(num_envs), k=max_envs))
+
+
+def _make_trajectory_manifest(
+    env,
+    env_cfg,
+    args: argparse.Namespace,
+    *,
+    run_dir: Path,
+    segment_dir: Path,
+    env_ids: list[int],
+    update: int,
+    global_step: int,
+    control_step: int,
+    video_path: Path | None,
+) -> dict[str, Any]:
+    unwrapped = env.unwrapped
+    actuated_joint_names = [unwrapped.robot.joint_names[index] for index in unwrapped.actuated_joint_ids]
+    object_variants = [_variant_to_dict(variant) for variant in unwrapped.cfg.object_variants]
+    env_assignments = []
+    for env_id in env_ids:
+        variant_id = int(unwrapped.object_variant_ids[env_id].item())
+        env_assignments.append({"env_id": env_id, "variant_id": variant_id, **object_variants[variant_id]})
+
+    return {
+        "schema_version": 2,
+        "format": {
+            "manifest": "static metadata for one bounded training trajectory segment",
+            "frames": "one JSON object per line in frames.jsonl",
+        },
+        "source": {
+            "sim": "isaaclab",
+            "task": args.task,
+            "repo_root": str(REPO_ROOT),
+            "run_dir": str(run_dir),
+            "segment_dir": str(segment_dir),
+            "video_path": None if video_path is None else str(video_path),
+        },
+        "timing": {
+            "sim_dt": float(env_cfg.sim.dt),
+            "decimation": int(env_cfg.decimation),
+            "control_dt": float(unwrapped.control_dt),
+            "start_update": int(update),
+            "start_global_step": int(global_step),
+            "start_control_step": int(control_step),
+            "log_every": int(args.trajectory_log_every),
+            "max_frames": int(args.trajectory_log_max_frames),
+        },
+        "coordinate_system": {
+            "world_frame": "Isaac Lab / PhysX world, meters, Z-up",
+            "quaternion_order": "wxyz",
+            "website_three_position_hint": "Isaac [x, y, z] -> Three [x, z, -y]",
+            "note": "Use robot.body_pos_w/body_quat_wxyz as ground truth to debug URDF root and joint transforms.",
+        },
+        "selection": {
+            "mode": args.trajectory_log_selection,
+            "logged_env_ids": env_ids,
+            "max_envs": int(args.trajectory_log_max_envs),
+            "seed": args.trajectory_log_seed if args.trajectory_log_seed is not None else args.seed,
+        },
+        "scene": {
+            "num_envs": int(unwrapped.num_envs),
+            "env_spacing": float(env_cfg.scene.env_spacing),
+            "logged_env_origins_w": _tolist(unwrapped.scene.env_origins[env_ids]),
+            "replicate_physics": bool(env_cfg.scene.replicate_physics),
+            "clone_in_fabric": bool(env_cfg.scene.clone_in_fabric),
+        },
+        "assets": {
+            "robot": {
+                "name": "kuka_sharpa",
+                "urdf_path": str(REPO_ROOT / "assets" / "urdf" / "kuka_sharpa_description" / "iiwa14_left_sharpa_adjusted_restricted.urdf"),
+                "urdf_path_repo": "assets/urdf/kuka_sharpa_description/iiwa14_left_sharpa_adjusted_restricted.urdf",
+                "website_public_path": "/simtoolreal_assets/urdf/kuka_sharpa_description/iiwa14_left_sharpa_adjusted_restricted.urdf",
+                "prim_path": env_cfg.robot_cfg.prim_path,
+            },
+            "table": {
+                "kind": "cuboid",
+                "size": list(env_cfg.table_cfg.spawn.size),
+                "prim_path": env_cfg.table_cfg.prim_path,
+            },
+            "object": {
+                "prim_path": env_cfg.object_cfg.prim_path,
+                "all_variant_count": len(object_variants),
+                "logged_env_assignments": env_assignments,
+            },
+            "goal_object": {
+                "prim_path": env_cfg.goal_object_cfg.prim_path,
+                "uses_same_variant_assignment_as_object": True,
+            },
+        },
+        "robot_model": {
+            "joint_names": list(unwrapped.robot.joint_names),
+            "actuated_joint_names": actuated_joint_names,
+            "actuated_joint_ids": [int(index) for index in unwrapped.actuated_joint_ids],
+            "body_names": list(unwrapped.robot.body_names),
+            "default_joint_pos": _tolist(unwrapped.default_joint_pos[0]),
+            "joint_lower_limits": _tolist(unwrapped.joint_lower_limits),
+            "joint_upper_limits": _tolist(unwrapped.joint_upper_limits),
+        },
+    }
+
+
+def _make_trajectory_frame(
+    env,
+    obs: dict[str, torch.Tensor],
+    reward: torch.Tensor,
+    done: torch.Tensor,
+    action: torch.Tensor,
+    *,
+    env_ids: list[int],
+    update: int,
+    rollout_step: int,
+    global_step: int,
+    control_step: int,
+    include_obs: bool,
+) -> dict[str, Any]:
+    unwrapped = env.unwrapped
+    env_origins = unwrapped.scene.env_origins
+    robot_root_w = unwrapped.robot.data.root_state_w
+    robot_body_w = unwrapped.robot.data.body_state_w
+    object_w = unwrapped.object.data.root_state_w
+    goal_w = unwrapped.goal_object.data.root_state_w
+    table_w = unwrapped.table.data.root_state_w
+
+    env_entries = []
+    for env_id in env_ids:
+        env_origin = env_origins[env_id]
+        body_pos_w = robot_body_w[env_id, :, :3]
+        object_state = object_w[env_id]
+        goal_state = goal_w[env_id]
+        table_state = table_w[env_id]
+        root_state = robot_root_w[env_id]
+        entry: dict[str, Any] = {
+            "env_id": env_id,
+            "env_origin_w": _tolist(env_origin),
+            "episode_step": int(unwrapped.episode_length_buf[env_id].item()),
+            "done": bool(done[env_id].item()),
+            "reward": float(reward[env_id].item()),
+            "successes": float(unwrapped.successes[env_id].item()),
+            "robot": {
+                "root_pose_w": _pose_from_state(root_state),
+                "root_pos_env": _tolist(root_state[:3] - env_origin),
+                "joint_pos": _tolist(unwrapped.robot.data.joint_pos[env_id]),
+                "joint_vel": _tolist(unwrapped.robot.data.joint_vel[env_id]),
+                "joint_targets": _tolist(unwrapped.joint_targets[env_id]),
+                "actuated_joint_pos": _tolist(unwrapped.robot.data.joint_pos[env_id, unwrapped.actuated_joint_ids]),
+                "actuated_joint_targets": _tolist(unwrapped.joint_targets[env_id, unwrapped.actuated_joint_ids]),
+                "action": _tolist(action[env_id]),
+                "body_pos_w": _tolist(body_pos_w),
+                "body_quat_wxyz": _tolist(robot_body_w[env_id, :, 3:7]),
+                "body_pos_env": _tolist(body_pos_w - env_origin.unsqueeze(0)),
+            },
+            "table": {
+                "pose_w": _pose_from_state(table_state),
+                "pos_env": _tolist(table_state[:3] - env_origin),
+            },
+            "object": {
+                "variant_id": int(unwrapped.object_variant_ids[env_id].item()),
+                "object_scale": _tolist(unwrapped.object_scales[env_id]),
+                "scale_noise_multiplier": _tolist(unwrapped.object_scale_noise_multiplier[env_id]),
+                "pose_w": _pose_from_state(object_state),
+                "pos_env": _tolist(object_state[:3] - env_origin),
+            },
+            "goal": {
+                "pose_w": _pose_from_state(goal_state),
+                "pos_env": _tolist(goal_state[:3] - env_origin),
+            },
+        }
+        if include_obs:
+            entry["debug"] = {
+                "policy_obs": _tolist(obs["policy"][env_id]),
+                "critic_obs": _tolist(obs["critic"][env_id]),
+            }
+        env_entries.append(entry)
+
+    return {
+        "update": int(update),
+        "rollout_step": int(rollout_step),
+        "global_step": int(global_step),
+        "control_step": int(control_step),
+        "sim_time": float(control_step * unwrapped.control_dt),
+        "envs": env_entries,
+    }
+
+
+class TrainingTrajectoryLogger:
+    def __init__(self, root_dir: Path, env_ids: list[int], env_cfg, args: argparse.Namespace):
+        self.root_dir = root_dir
+        self.env_ids = env_ids
+        self.env_cfg = env_cfg
+        self.args = args
+        self.root_dir.mkdir(parents=True, exist_ok=True)
+        self.index_path = self.root_dir / "index.jsonl"
+        self.segment_dir: Path | None = None
+        self.frames_path: Path | None = None
+        self._stream = None
+        self._frames_written = 0
+
+    @property
+    def active(self) -> bool:
+        return self._stream is not None
+
+    def start_segment(
+        self,
+        env,
+        *,
+        run_dir: Path,
+        update: int,
+        global_step: int,
+        control_step: int,
+        video_path: Path | None,
+    ) -> Path:
+        if self.active:
+            self.close_segment(reason="restarted")
+        segment_name = f"segment_control_step_{control_step:010d}"
+        segment_dir = self.root_dir / segment_name
+        suffix = 1
+        while segment_dir.exists():
+            segment_dir = self.root_dir / f"{segment_name}_{suffix:02d}"
+            suffix += 1
+        segment_dir.mkdir(parents=True, exist_ok=True)
+        manifest = _make_trajectory_manifest(
+            env,
+            self.env_cfg,
+            self.args,
+            run_dir=run_dir,
+            segment_dir=segment_dir,
+            env_ids=self.env_ids,
+            update=update,
+            global_step=global_step,
+            control_step=control_step,
+            video_path=video_path,
+        )
+        manifest_path = segment_dir / "manifest.json"
+        frames_path = segment_dir / "frames.jsonl"
+        manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+        with self.index_path.open("a", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(
+                    {
+                        "segment_dir": str(segment_dir),
+                        "manifest": str(manifest_path),
+                        "frames": str(frames_path),
+                        "video_path": None if video_path is None else str(video_path),
+                        "start_update": update,
+                        "start_global_step": global_step,
+                        "start_control_step": control_step,
+                        "env_ids": self.env_ids,
+                    }
+                )
+                + "\n"
+            )
+        self.segment_dir = segment_dir
+        self.frames_path = frames_path
+        self._stream = frames_path.open("w", encoding="utf-8")
+        self._frames_written = 0
+        print(f"[CLEANRL] trajectory_log_start={segment_dir}", flush=True)
+        return segment_dir
+
+    def log_frame(
+        self,
+        env,
+        obs: dict[str, torch.Tensor],
+        reward: torch.Tensor,
+        done: torch.Tensor,
+        action: torch.Tensor,
+        *,
+        update: int,
+        rollout_step: int,
+        global_step: int,
+        control_step: int,
+    ) -> Path | None:
+        if not self.active:
+            return None
+        if control_step % self.args.trajectory_log_every != 0:
+            return None
+        assert self._stream is not None
+        frame = _make_trajectory_frame(
+            env,
+            obs,
+            reward,
+            done,
+            action,
+            env_ids=self.env_ids,
+            update=update,
+            rollout_step=rollout_step,
+            global_step=global_step,
+            control_step=control_step,
+            include_obs=self.args.trajectory_log_include_obs,
+        )
+        self._stream.write(json.dumps(frame) + "\n")
+        self._frames_written += 1
+        if self._frames_written % 20 == 0:
+            self._stream.flush()
+        if self._frames_written >= self.args.trajectory_log_max_frames:
+            return self.close_segment(reason="max_frames")
+        return None
+
+    def close_segment(self, *, reason: str) -> Path | None:
+        if not self.active:
+            return None
+        assert self._stream is not None
+        assert self.segment_dir is not None
+        self._stream.flush()
+        self._stream.close()
+        self._stream = None
+        summary_path = self.segment_dir / "summary.json"
+        summary_path.write_text(
+            json.dumps({"frames_written": self._frames_written, "closed_reason": reason}, indent=2),
+            encoding="utf-8",
+        )
+        completed_dir = self.segment_dir
+        print(f"[CLEANRL] trajectory_log_saved={completed_dir}", flush=True)
+        self.segment_dir = None
+        self.frames_path = None
+        self._frames_written = 0
+        return completed_dir
+
+
 def _flatten_scalar_dict(values: dict[str, Any], prefix: str = "") -> dict[str, float | int]:
     flat: dict[str, float | int] = {}
     for key, value in values.items():
@@ -774,6 +1176,13 @@ def main() -> None:
         raise ValueError("--num_steps must be divisible by --seq_length for recurrent PPO")
     if args_cli.minibatch_size % args_cli.seq_length != 0:
         raise ValueError("--minibatch_size must be divisible by --seq_length for recurrent PPO")
+    if args_cli.trajectory_log:
+        if args_cli.trajectory_log_max_envs <= 0:
+            raise ValueError("--trajectory_log_max_envs must be positive")
+        if args_cli.trajectory_log_every <= 0:
+            raise ValueError("--trajectory_log_every must be positive")
+        if args_cli.trajectory_log_max_frames <= 0:
+            raise ValueError("--trajectory_log_max_frames must be positive")
 
     random.seed(args_cli.seed)
     np.random.seed(args_cli.seed)
@@ -787,9 +1196,12 @@ def main() -> None:
     run_dir = args_cli.output_root / args_cli.wandb_project / args_cli.wandb_group / run_name
     ckpt_dir = run_dir / "checkpoints"
     video_dir = run_dir / "videos" / "train"
+    trajectory_root = run_dir / "training_logs" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     video_dir.mkdir(parents=True, exist_ok=True)
+    if args_cli.trajectory_log:
+        trajectory_root.mkdir(parents=True, exist_ok=True)
 
     print(f"[CLEANRL] task={args_cli.task} app_device={args_cli.device} env_device={env_device}", flush=True)
     print(f"[CLEANRL] run_dir={run_dir}", flush=True)
@@ -815,10 +1227,16 @@ def main() -> None:
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.capture_video else None)
     wandb_run = None
     video_writer = None
+    trajectory_logger: TrainingTrajectoryLogger | None = None
     try:
         obs, _ = env.reset(seed=args_cli.seed)
         if args_cli.capture_video:
             _set_camera(env)
+        if args_cli.trajectory_log:
+            trajectory_env_ids = _sample_trajectory_env_ids(env, args_cli)
+            trajectory_logger = TrainingTrajectoryLogger(trajectory_root, trajectory_env_ids, env_cfg, args_cli)
+            print(f"[CLEANRL] trajectory_log_root={trajectory_root}", flush=True)
+            print(f"[CLEANRL] trajectory_log_env_ids={trajectory_env_ids}", flush=True)
 
         device = torch.device(env.unwrapped.device)
         policy_obs_dim = int(obs["policy"].shape[-1])
@@ -891,6 +1309,7 @@ def main() -> None:
         for update in range(start_update + 1, args_cli.total_updates + 1):
             rollout_start = time.time()
             completed_video_paths: list[str] = []
+            completed_trajectory_paths: list[str] = []
             initial_actor_state = (actor_state[0].detach().clone(), actor_state[1].detach().clone())
 
             obs_buf = torch.zeros((args_cli.num_steps, args_cli.num_envs, policy_obs_dim), device=device)
@@ -929,7 +1348,8 @@ def main() -> None:
                 mu_buf[step] = mu
                 sigma_buf[step] = sigma
 
-                obs, reward, terminated, truncated, _info = env.step(torch.clamp(action, -1.0, 1.0))
+                env_action = torch.clamp(action, -1.0, 1.0)
+                obs, reward, terminated, truncated, _info = env.step(env_action)
                 next_done = terminated | truncated
                 rewards_buf[step] = reward * args_cli.reward_scale
                 policy_obs = obs["policy"].to(device)
@@ -967,20 +1387,74 @@ def main() -> None:
                         video_writer = imageio.get_writer(str(video_path), fps=video_fps, macro_block_size=1)
                         video_frames_written = 0
                         video_capture_pending = False
+                        if trajectory_logger is not None:
+                            trajectory_logger.start_segment(
+                                env,
+                                run_dir=run_dir,
+                                update=update,
+                                global_step=global_step,
+                                control_step=control_step,
+                                video_path=video_path,
+                            )
 
                     if video_writer is not None:
                         _write_video_frame(video_writer, env)
                         video_frames_written += 1
+                        if trajectory_logger is not None:
+                            completed_trajectory_dir = trajectory_logger.log_frame(
+                                env,
+                                obs,
+                                reward,
+                                next_done,
+                                env_action,
+                                update=update,
+                                rollout_step=step,
+                                global_step=global_step,
+                                control_step=control_step,
+                            )
+                            if completed_trajectory_dir is not None:
+                                completed_trajectory_paths.append(str(completed_trajectory_dir))
                         if video_frames_written >= args_cli.capture_video_len:
                             assert video_path is not None
                             video_writer.close()
                             video_writer = None
                             completed_video_paths.append(str(video_path))
+                            if trajectory_logger is not None and trajectory_logger.active:
+                                completed_trajectory_dir = trajectory_logger.close_segment(reason="video_complete")
+                                if completed_trajectory_dir is not None:
+                                    completed_trajectory_paths.append(str(completed_trajectory_dir))
                             print("-" * 80, flush=True)
                             print(f"Saved video to {video_path}", flush=True)
                             print("-" * 80, flush=True)
                             video_path = None
                             video_frames_written = 0
+                elif trajectory_logger is not None:
+                    if (
+                        not trajectory_logger.active
+                        and args_cli.capture_video_freq > 0
+                        and control_step % args_cli.capture_video_freq == 0
+                    ):
+                        trajectory_logger.start_segment(
+                            env,
+                            run_dir=run_dir,
+                            update=update,
+                            global_step=global_step,
+                            control_step=control_step,
+                            video_path=None,
+                        )
+                    completed_trajectory_dir = trajectory_logger.log_frame(
+                        env,
+                        obs,
+                        reward,
+                        next_done,
+                        env_action,
+                        update=update,
+                        rollout_step=step,
+                        global_step=global_step,
+                        control_step=control_step,
+                    )
+                    if completed_trajectory_dir is not None:
+                        completed_trajectory_paths.append(str(completed_trajectory_dir))
 
             with torch.no_grad():
                 norm_next_critic = _normalize_base_and_append(critic_obs, state_rms, sapg["env_coef"])
@@ -1128,6 +1602,7 @@ def main() -> None:
                 learning_rate=current_lr,
                 sigma_mean=float(batch["old_sigma"].mean().item()),
                 video_path=completed_video_paths[-1] if completed_video_paths else None,
+                trajectory_log_path=completed_trajectory_paths[-1] if completed_trajectory_paths else None,
             )
 
             print(
@@ -1140,7 +1615,11 @@ def main() -> None:
             )
 
             if wandb_run is not None:
-                log_payload = {f"train/{key}": value for key, value in asdict(stats).items() if key != "video_path"}
+                log_payload = {
+                    f"train/{key}": value
+                    for key, value in asdict(stats).items()
+                    if key not in ("video_path", "trajectory_log_path")
+                }
                 log_payload.update(
                     {
                         "global_step": stats.global_step,
@@ -1164,6 +1643,8 @@ def main() -> None:
                     # so W&B dashboards/media panels match the Isaac Gym runs.
                     log_payload["video"] = wandb.Video(stats.video_path, fps=video_fps, format="mp4")
                     log_payload["train/video_path"] = stats.video_path
+                if stats.trajectory_log_path is not None:
+                    log_payload["train/trajectory_log_path"] = stats.trajectory_log_path
                 wandb_run.log(log_payload, step=global_step)
 
             if update % args_cli.save_frequency == 0:
@@ -1179,6 +1660,8 @@ def main() -> None:
     finally:
         if video_writer is not None:
             video_writer.close()
+        if trajectory_logger is not None and trajectory_logger.active:
+            trajectory_logger.close_segment(reason="shutdown")
         if wandb_run is not None:
             wandb_run.finish()
         env.close()
