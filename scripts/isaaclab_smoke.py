@@ -39,8 +39,8 @@ class SmokeAppLauncher(AppLauncher):
 
 
 parser = argparse.ArgumentParser(description="Run a short Isaac Lab smoke test.")
-parser.add_argument("--task", type=str, default="SimToolReal-Smoke-Cartpole-Direct-v0", help="Gym task ID to run.")
-parser.add_argument("--num_envs", type=int, default=4, help="Number of Cartpole environments.")
+parser.add_argument("--task", type=str, default="SimToolReal-Direct-Debug-v0", help="Gym task ID to run.")
+parser.add_argument("--num_envs", type=int, default=4, help="Number of environments.")
 parser.add_argument("--steps", type=int, default=32, help="Number of simulation steps.")
 parser.add_argument("--windowed", action="store_true", help="Launch Isaac Sim with a display instead of headless.")
 parser.add_argument("--disable_fabric", action="store_true", help="Disable Fabric scene cloning/render path.")
@@ -52,6 +52,7 @@ parser.add_argument(
 )
 parser.add_argument("--kit_active_gpu", type=int, default=None, help="Optional Kit renderer activeGpu override.")
 parser.add_argument("--kit_physics_gpu", type=int, default=None, help="Optional Kit /physics/cudaDevice override.")
+parser.add_argument("--print_joint_order", action="store_true", help="Print Isaac Lab articulation joint order and exit.")
 SmokeAppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True)
 args_cli = parser.parse_args()
@@ -87,6 +88,19 @@ def main() -> None:
     print("[SMOKE] creating env", flush=True)
     env = gym.make(args_cli.task, cfg=env_cfg)
     try:
+        if args_cli.print_joint_order:
+            try:
+                from isaaclab_env.tasks.direct.simtoolreal.env import ISAACGYM_ACTION_JOINT_NAMES
+            except Exception:
+                ISAACGYM_ACTION_JOINT_NAMES = None
+            joint_names = env.unwrapped.robot.joint_names
+            actuated_names = [joint_names[index] for index in env.unwrapped.actuated_joint_ids]
+            print("[SMOKE] articulation_joint_order=", joint_names, flush=True)
+            print("[SMOKE] actuated_joint_order=", actuated_names, flush=True)
+            if ISAACGYM_ACTION_JOINT_NAMES is not None:
+                print(f"[SMOKE] matches_isaacgym_order={tuple(actuated_names) == ISAACGYM_ACTION_JOINT_NAMES}", flush=True)
+            return
+
         print("[SMOKE] resetting env", flush=True)
         obs, _ = env.reset()
         print(f"[SMOKE] reset ok: task={args_cli.task} policy_obs_shape={tuple(obs['policy'].shape)}", flush=True)
