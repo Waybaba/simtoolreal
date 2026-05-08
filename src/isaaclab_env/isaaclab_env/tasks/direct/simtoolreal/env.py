@@ -548,6 +548,7 @@ class SimToolRealDirectEnv(DirectRLEnv):
 
         self.lifted_object = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.successes = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        self.reset_goal_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.near_goal_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.closest_keypoint_max_dist = -torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
         self.closest_keypoint_max_dist_fixed_size = -torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
@@ -629,6 +630,16 @@ class SimToolRealDirectEnv(DirectRLEnv):
         return queue
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        reset_goal_env_ids = self.reset_goal_buf.nonzero(as_tuple=False).flatten()
+        if reset_goal_env_ids.numel() > 0:
+            # Match Isaac Gym: after a successful placement, sample the next goal
+            # before applying the next action, without resetting the whole env.
+            keep = ~self.reset_buf[reset_goal_env_ids]
+            reset_goal_env_ids = reset_goal_env_ids[keep]
+            if reset_goal_env_ids.numel() > 0:
+                self._reset_goal(reset_goal_env_ids, is_first_goal=False)
+            self.reset_goal_buf[:] = False
+
         actions = torch.clamp(actions, -1.0, 1.0)
         self.action_queue = self._update_queue(self.action_queue, actions)
         if self.cfg.use_action_delay:
@@ -725,6 +736,14 @@ class SimToolRealDirectEnv(DirectRLEnv):
             self.near_goal_steps += near_goal.long()
         is_success = self.near_goal_steps >= self.cfg.success_steps
         self.successes += is_success.float()
+        self.reset_goal_buf[:] = is_success
+        max_success = (
+            self.successes >= self.cfg.max_consecutive_successes
+            if self.cfg.max_consecutive_successes > 0
+            else torch.zeros_like(is_success)
+        )
+        self.reset_terminated |= max_success
+        self.reset_buf |= max_success
 
         object_lin_vel_penalty = -torch.sum(torch.square(self.object_vel[:, :3]), dim=-1)
         object_ang_vel_penalty = -torch.sum(torch.square(self.object_vel[:, 3:]), dim=-1)
@@ -789,7 +808,11 @@ class SimToolRealDirectEnv(DirectRLEnv):
         self._compute_intermediate_values()
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         object_z_low = self.object_pos[:, 2] < 0.1
-        max_success = self.successes >= self.cfg.max_consecutive_successes
+        max_success = (
+            self.successes >= self.cfg.max_consecutive_successes
+            if self.cfg.max_consecutive_successes > 0
+            else torch.zeros_like(object_z_low)
+        )
         hand_far = self.curr_fingertip_distances.max(dim=-1).values > 1.5
         terminated = object_z_low | max_success | hand_far
         return terminated, time_out
@@ -803,6 +826,7 @@ class SimToolRealDirectEnv(DirectRLEnv):
 
         self.prev_episode_successes[env_ids] = self.successes[env_ids]
         self.successes[env_ids] = 0
+        self.reset_goal_buf[env_ids] = False
         self.near_goal_steps[env_ids] = 0
         self.lifted_object[env_ids] = False
         self.closest_keypoint_max_dist[env_ids] = -1.0

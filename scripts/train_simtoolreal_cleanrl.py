@@ -126,11 +126,15 @@ parser.add_argument("--capture_video_len", type=int, default=600, help="Number o
 parser.add_argument("--capture_video_env_id", type=int, default=0, help="Env id viewed by the training video camera.")
 parser.add_argument("--capture_video_start_on_reset", action=argparse.BooleanOptionalAction, default=True, help="Match old behavior: arm capture at the cadence, then start recording when the viewed env resets.")
 parser.add_argument("--video_fps", type=int, default=0, help="0 matches the old env video fps: int(1 / control_dt).")
+parser.add_argument("--video_camera_mode", choices=("env_close", "grid_overview"), default="env_close", help="Use a close camera on one env or the old all-env overview camera.")
+parser.add_argument("--video_camera_eye_offset", type=float, nargs=3, default=[1.15, 0.15, 0.95], help="Close-camera eye offset from the selected env origin.")
+parser.add_argument("--video_camera_target_offset", type=float, nargs=3, default=[0.0, 0.28, 0.58], help="Close-camera target offset from the selected env origin.")
 parser.add_argument("--trajectory_log", action=argparse.BooleanOptionalAction, default=True, help="Write replay-friendly robot/object pose logs during training video windows.")
 parser.add_argument("--trajectory_log_max_envs", type=int, default=4, help="Maximum number of envs to include in each trajectory log.")
 parser.add_argument("--trajectory_log_selection", choices=("first_line", "first", "random"), default="first_line", help="How to choose envs for trajectory logging.")
 parser.add_argument("--trajectory_log_every", type=int, default=1, help="Write one trajectory frame every N control steps while logging is active.")
-parser.add_argument("--trajectory_log_max_frames", type=int, default=600, help="Hard cap on JSONL frames per trajectory segment.")
+parser.add_argument("--trajectory_log_video_len_multiplier", type=int, default=10, help="Default trajectory frames per segment are capture_video_len times this multiplier.")
+parser.add_argument("--trajectory_log_max_frames", type=int, default=None, help="Optional hard override for JSONL frames per trajectory segment.")
 parser.add_argument("--trajectory_log_include_obs", action=argparse.BooleanOptionalAction, default=True, help="Include sampled policy/critic observations in trajectory frames.")
 parser.add_argument("--trajectory_log_seed", type=int, default=None, help="Seed for random trajectory env sampling. Defaults to --seed.")
 
@@ -642,13 +646,19 @@ def _update_adaptive_lr(current_lr: float, kl_threshold: float, approx_kl: float
     return current_lr
 
 
-def _set_camera(env) -> None:
+def _set_camera(env, args: argparse.Namespace) -> None:
     origins = env.unwrapped.scene.env_origins[: env.unwrapped.num_envs].detach().cpu()
-    center = origins.mean(dim=0)
-    spread = torch.linalg.norm(origins.max(dim=0).values - origins.min(dim=0).values).item()
-    distance = max(2.8, spread * 1.4)
-    eye = center + torch.tensor([distance, -distance, 1.65])
-    target = center + torch.tensor([0.0, 0.38, 0.52])
+    if args.video_camera_mode == "grid_overview":
+        center = origins.mean(dim=0)
+        spread = torch.linalg.norm(origins.max(dim=0).values - origins.min(dim=0).values).item()
+        distance = max(2.8, spread * 1.4)
+        eye = center + torch.tensor([distance, -distance, 1.65])
+        target = center + torch.tensor([0.0, 0.38, 0.52])
+    else:
+        env_id = min(max(args.capture_video_env_id, 0), env.unwrapped.num_envs - 1)
+        origin = origins[env_id]
+        eye = origin + torch.tensor(args.video_camera_eye_offset, dtype=origin.dtype)
+        target = origin + torch.tensor(args.video_camera_target_offset, dtype=origin.dtype)
     env.unwrapped.sim.set_camera_view(
         eye=eye.tolist(),
         target=target.tolist(),
@@ -751,6 +761,12 @@ def _sample_trajectory_env_ids(env, args: argparse.Namespace) -> list[int]:
     return sorted(rng.sample(range(num_envs), k=max_envs))
 
 
+def _resolve_trajectory_log_max_frames(args: argparse.Namespace) -> int:
+    if args.trajectory_log_max_frames is not None:
+        return int(args.trajectory_log_max_frames)
+    return int(args.capture_video_len * args.trajectory_log_video_len_multiplier)
+
+
 def _make_trajectory_manifest(
     env,
     env_cfg,
@@ -795,6 +811,8 @@ def _make_trajectory_manifest(
             "start_control_step": int(control_step),
             "log_every": int(args.trajectory_log_every),
             "max_frames": int(args.trajectory_log_max_frames),
+            "video_len": int(args.capture_video_len),
+            "video_len_multiplier": int(args.trajectory_log_video_len_multiplier),
         },
         "coordinate_system": {
             "world_frame": "Isaac Lab / PhysX world, meters, Z-up",
@@ -1176,13 +1194,18 @@ def main() -> None:
         raise ValueError("--num_steps must be divisible by --seq_length for recurrent PPO")
     if args_cli.minibatch_size % args_cli.seq_length != 0:
         raise ValueError("--minibatch_size must be divisible by --seq_length for recurrent PPO")
+    if args_cli.capture_video_len <= 0:
+        raise ValueError("--capture_video_len must be positive")
     if args_cli.trajectory_log:
         if args_cli.trajectory_log_max_envs <= 0:
             raise ValueError("--trajectory_log_max_envs must be positive")
         if args_cli.trajectory_log_every <= 0:
             raise ValueError("--trajectory_log_every must be positive")
-        if args_cli.trajectory_log_max_frames <= 0:
+        if args_cli.trajectory_log_video_len_multiplier <= 0:
+            raise ValueError("--trajectory_log_video_len_multiplier must be positive")
+        if args_cli.trajectory_log_max_frames is not None and args_cli.trajectory_log_max_frames <= 0:
             raise ValueError("--trajectory_log_max_frames must be positive")
+        args_cli.trajectory_log_max_frames = _resolve_trajectory_log_max_frames(args_cli)
 
     random.seed(args_cli.seed)
     np.random.seed(args_cli.seed)
@@ -1231,12 +1254,13 @@ def main() -> None:
     try:
         obs, _ = env.reset(seed=args_cli.seed)
         if args_cli.capture_video:
-            _set_camera(env)
+            _set_camera(env, args_cli)
         if args_cli.trajectory_log:
             trajectory_env_ids = _sample_trajectory_env_ids(env, args_cli)
             trajectory_logger = TrainingTrajectoryLogger(trajectory_root, trajectory_env_ids, env_cfg, args_cli)
             print(f"[CLEANRL] trajectory_log_root={trajectory_root}", flush=True)
             print(f"[CLEANRL] trajectory_log_env_ids={trajectory_env_ids}", flush=True)
+            print(f"[CLEANRL] trajectory_log_max_frames={args_cli.trajectory_log_max_frames}", flush=True)
 
         device = torch.device(env.unwrapped.device)
         policy_obs_dim = int(obs["policy"].shape[-1])
@@ -1377,6 +1401,8 @@ def main() -> None:
                         video_capture_pending = True
 
                     should_start_video = video_writer is None and video_capture_pending
+                    if should_start_video and trajectory_logger is not None and trajectory_logger.active:
+                        should_start_video = False
                     if should_start_video and args_cli.capture_video_start_on_reset:
                         should_start_video = bool(next_done[args_cli.capture_video_env_id].item())
                     if should_start_video:
@@ -1400,34 +1426,30 @@ def main() -> None:
                     if video_writer is not None:
                         _write_video_frame(video_writer, env)
                         video_frames_written += 1
-                        if trajectory_logger is not None:
-                            completed_trajectory_dir = trajectory_logger.log_frame(
-                                env,
-                                obs,
-                                reward,
-                                next_done,
-                                env_action,
-                                update=update,
-                                rollout_step=step,
-                                global_step=global_step,
-                                control_step=control_step,
-                            )
-                            if completed_trajectory_dir is not None:
-                                completed_trajectory_paths.append(str(completed_trajectory_dir))
                         if video_frames_written >= args_cli.capture_video_len:
                             assert video_path is not None
                             video_writer.close()
                             video_writer = None
                             completed_video_paths.append(str(video_path))
-                            if trajectory_logger is not None and trajectory_logger.active:
-                                completed_trajectory_dir = trajectory_logger.close_segment(reason="video_complete")
-                                if completed_trajectory_dir is not None:
-                                    completed_trajectory_paths.append(str(completed_trajectory_dir))
                             print("-" * 80, flush=True)
                             print(f"Saved video to {video_path}", flush=True)
                             print("-" * 80, flush=True)
                             video_path = None
                             video_frames_written = 0
+                    if trajectory_logger is not None:
+                        completed_trajectory_dir = trajectory_logger.log_frame(
+                            env,
+                            obs,
+                            reward,
+                            next_done,
+                            env_action,
+                            update=update,
+                            rollout_step=step,
+                            global_step=global_step,
+                            control_step=control_step,
+                        )
+                        if completed_trajectory_dir is not None:
+                            completed_trajectory_paths.append(str(completed_trajectory_dir))
                 elif trajectory_logger is not None:
                     if (
                         not trajectory_logger.active
