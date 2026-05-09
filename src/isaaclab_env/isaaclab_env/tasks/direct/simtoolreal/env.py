@@ -349,8 +349,18 @@ class SimToolRealDirectEnvCfg(DirectRLEnvCfg):
     force_prob_range = (0.001, 0.1)
     torque_scale = 2.0
     torque_prob_range = (0.001, 0.1)
+    force_decay = 0.0
+    force_decay_interval = 0.08
+    torque_decay = 0.0
+    torque_decay_interval = 0.08
     force_only_when_lifted = True
     torque_only_when_lifted = True
+    lin_vel_impulse_prob_range = (0.001, 0.1)
+    lin_vel_impulse_scale = 0.0
+    lin_vel_impulse_only_when_lifted = True
+    ang_vel_impulse_prob_range = (0.001, 0.1)
+    ang_vel_impulse_scale = 0.0
+    ang_vel_impulse_only_when_lifted = True
 
     lifting_rew_scale = 20.0
     lifting_bonus = 300.0
@@ -367,6 +377,10 @@ class SimToolRealDirectEnvCfg(DirectRLEnvCfg):
     success_steps = 10
     max_consecutive_successes = 50
     force_consecutive_near_goal_steps = False
+    reset_when_dropped = False
+    force_no_reset = False
+    with_table_force_sensor = False
+    table_force_reset_threshold = 100.0
 
     keypoint_scale = 1.5
     object_base_size = 0.04
@@ -391,9 +405,9 @@ class SimToolRealDirectEnvCfg(DirectRLEnvCfg):
     key_light_color = (1.0, 0.94, 0.82)
     key_light_angle = 2.0
 
-    use_action_delay = True
+    use_action_delay = False
     action_delay_max = 3
-    use_object_state_delay_noise = True
+    use_object_state_delay_noise = False
     object_state_delay_max = 10
     object_state_xyz_noise_std = 0.01
     object_state_rotation_noise_degrees = 5.0
@@ -534,6 +548,11 @@ class SimToolRealDirectEnv(DirectRLEnv):
             dtype=torch.float32,
             device=self.device,
         )[self.object_variant_ids]
+        self.object_masses = torch.tensor(
+            [variant.mass for variant in self.cfg.object_variants],
+            dtype=torch.float32,
+            device=self.device,
+        )[self.object_variant_ids].unsqueeze(-1)
         self.keypoint_signs = torch.tensor(OBJECT_KEYPOINT_SIGNS, dtype=torch.float32, device=self.device)
         self.fingertip_offsets = torch.tensor(FINGERTIP_OFFSETS, dtype=torch.float32, device=self.device)
         self.object_keypoint_offsets = self._make_object_keypoint_offsets(self.object_scales)
@@ -571,6 +590,20 @@ class SimToolRealDirectEnv(DirectRLEnv):
         self.random_torque_prob = sample_log_uniform(
             self.cfg.torque_prob_range[0], self.cfg.torque_prob_range[1], self.num_envs, self.device
         )
+        self.random_lin_vel_impulse_prob = sample_log_uniform(
+            self.cfg.lin_vel_impulse_prob_range[0],
+            self.cfg.lin_vel_impulse_prob_range[1],
+            self.num_envs,
+            self.device,
+        )
+        self.random_ang_vel_impulse_prob = sample_log_uniform(
+            self.cfg.ang_vel_impulse_prob_range[0],
+            self.cfg.ang_vel_impulse_prob_range[1],
+            self.num_envs,
+            self.device,
+        )
+        self.rb_forces = torch.zeros((self.num_envs, 1, 3), dtype=torch.float32, device=self.device)
+        self.rb_torques = torch.zeros_like(self.rb_forces)
         self.last_reward = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
 
         self.target_volume_min = torch.tensor(self.cfg.target_volume_mins, dtype=torch.float32, device=self.device)
@@ -638,6 +671,7 @@ class SimToolRealDirectEnv(DirectRLEnv):
             reset_goal_env_ids = reset_goal_env_ids[keep]
             if reset_goal_env_ids.numel() > 0:
                 self._reset_goal(reset_goal_env_ids, is_first_goal=False)
+                self._reset_goal_tracking(reset_goal_env_ids)
             self.reset_goal_buf[:] = False
 
         actions = torch.clamp(actions, -1.0, 1.0)
@@ -670,19 +704,78 @@ class SimToolRealDirectEnv(DirectRLEnv):
         self._apply_random_wrenches()
 
     def _apply_random_wrenches(self) -> None:
-        forces = torch.zeros((self.num_envs, 1, 3), dtype=torch.float32, device=self.device)
-        torques = torch.zeros_like(forces)
+        if self.cfg.force_scale > 0:
+            if self.cfg.force_decay > 0 and self.cfg.force_decay_interval > 0:
+                self.rb_forces *= self.cfg.force_decay ** (self.control_dt / self.cfg.force_decay_interval)
+            else:
+                self.rb_forces.zero_()
+        else:
+            self.rb_forces.zero_()
+
+        if self.cfg.torque_scale > 0:
+            if self.cfg.torque_decay > 0 and self.cfg.torque_decay_interval > 0:
+                self.rb_torques *= self.cfg.torque_decay ** (self.control_dt / self.cfg.torque_decay_interval)
+            else:
+                self.rb_torques.zero_()
+        else:
+            self.rb_torques.zero_()
+
         if self.cfg.force_scale > 0:
             force_mask = torch.rand(self.num_envs, device=self.device) < self.random_force_prob
             if self.cfg.force_only_when_lifted:
                 force_mask &= self.lifted_object
-            forces[force_mask, 0] = torch.randn((int(force_mask.sum()), 3), device=self.device) * self.cfg.force_scale * 0.1
+            force_count = int(force_mask.sum().item())
+            if force_count > 0:
+                self.rb_forces[force_mask, 0] = (
+                    torch.randn((force_count, 3), device=self.device)
+                    * self.object_masses[force_mask]
+                    * self.cfg.force_scale
+                )
+            if self.cfg.force_only_when_lifted:
+                self.rb_forces *= self.lifted_object.reshape(-1, 1, 1).float()
         if self.cfg.torque_scale > 0:
             torque_mask = torch.rand(self.num_envs, device=self.device) < self.random_torque_prob
             if self.cfg.torque_only_when_lifted:
                 torque_mask &= self.lifted_object
-            torques[torque_mask, 0] = torch.randn((int(torque_mask.sum()), 3), device=self.device) * self.cfg.torque_scale * 0.1
-        self.object.set_external_force_and_torque(forces, torques, is_global=True)
+            torque_count = int(torque_mask.sum().item())
+            if torque_count > 0:
+                self.rb_torques[torque_mask, 0] = (
+                    torch.randn((torque_count, 3), device=self.device)
+                    * self.object_masses[torque_mask]
+                    * self.cfg.torque_scale
+                )
+            if self.cfg.torque_only_when_lifted:
+                self.rb_torques *= self.lifted_object.reshape(-1, 1, 1).float()
+        self.object.set_external_force_and_torque(self.rb_forces, self.rb_torques, is_global=True)
+        self._apply_random_velocity_impulses()
+
+    def _apply_random_velocity_impulses(self) -> None:
+        if self.cfg.lin_vel_impulse_scale <= 0.0 and self.cfg.ang_vel_impulse_scale <= 0.0:
+            return
+
+        root_velocity = self.object.data.root_state_w[:, 7:13].clone()
+        update_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if self.cfg.lin_vel_impulse_scale > 0.0:
+            lin_mask = torch.rand(self.num_envs, device=self.device) < self.random_lin_vel_impulse_prob
+            if self.cfg.lin_vel_impulse_only_when_lifted:
+                lin_mask &= self.lifted_object
+            lin_count = int(lin_mask.sum().item())
+            if lin_count > 0:
+                root_velocity[lin_mask, :3] = torch.randn((lin_count, 3), device=self.device) * self.cfg.lin_vel_impulse_scale
+                update_mask |= lin_mask
+
+        if self.cfg.ang_vel_impulse_scale > 0.0:
+            ang_mask = torch.rand(self.num_envs, device=self.device) < self.random_ang_vel_impulse_prob
+            if self.cfg.ang_vel_impulse_only_when_lifted:
+                ang_mask &= self.lifted_object
+            ang_count = int(ang_mask.sum().item())
+            if ang_count > 0:
+                root_velocity[ang_mask, 3:6] = torch.randn((ang_count, 3), device=self.device) * self.cfg.ang_vel_impulse_scale
+                update_mask |= ang_mask
+
+        env_ids = update_mask.nonzero(as_tuple=False).flatten()
+        if env_ids.numel() > 0:
+            self.object.write_root_velocity_to_sim(root_velocity[env_ids], env_ids=env_ids)
 
     def _get_observations(self) -> dict:
         self._compute_intermediate_values()
@@ -737,13 +830,16 @@ class SimToolRealDirectEnv(DirectRLEnv):
         is_success = self.near_goal_steps >= self.cfg.success_steps
         self.successes += is_success.float()
         self.reset_goal_buf[:] = is_success
+        if self.cfg.max_consecutive_successes > 0:
+            self.episode_length_buf = torch.where(is_success, torch.zeros_like(self.episode_length_buf), self.episode_length_buf)
         max_success = (
             self.successes >= self.cfg.max_consecutive_successes
             if self.cfg.max_consecutive_successes > 0
             else torch.zeros_like(is_success)
         )
-        self.reset_terminated |= max_success
-        self.reset_buf |= max_success
+        if not self.cfg.force_no_reset:
+            self.reset_terminated |= max_success
+            self.reset_buf |= max_success
 
         object_lin_vel_penalty = -torch.sum(torch.square(self.object_vel[:, :3]), dim=-1)
         object_ang_vel_penalty = -torch.sum(torch.square(self.object_vel[:, 3:]), dim=-1)
@@ -814,7 +910,18 @@ class SimToolRealDirectEnv(DirectRLEnv):
             else torch.zeros_like(object_z_low)
         )
         hand_far = self.curr_fingertip_distances.max(dim=-1).values > 1.5
-        terminated = object_z_low | max_success | hand_far
+        dropped = (
+            (self.object_pos[:, 2] < self.object_init_state[:, 2]) & self.lifted_object
+            if self.cfg.reset_when_dropped
+            else torch.zeros_like(object_z_low)
+        )
+        table_force_too_high = torch.zeros_like(object_z_low)
+        if self.cfg.with_table_force_sensor and hasattr(self, "max_table_sensor_force_norm_smoothed"):
+            table_force_too_high = self.max_table_sensor_force_norm_smoothed > self.cfg.table_force_reset_threshold
+        terminated = object_z_low | max_success | hand_far | dropped | table_force_too_high
+        if self.cfg.force_no_reset:
+            terminated = torch.zeros_like(terminated)
+            time_out = torch.zeros_like(time_out)
         return terminated, time_out
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
@@ -825,6 +932,14 @@ class SimToolRealDirectEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
 
         self.prev_episode_successes[env_ids] = self.successes[env_ids]
+        self.prev_episode_closest_keypoint_max_dist[env_ids] = torch.where(
+            self.prev_episode_successes[env_ids] > 0,
+            self.prev_total_episode_closest_keypoint_max_dist[env_ids]
+            / torch.clamp(self.prev_episode_successes[env_ids], min=1.0),
+            self.total_episode_closest_keypoint_max_dist[env_ids],
+        )
+        self.total_episode_closest_keypoint_max_dist[env_ids] = 0.0
+        self.prev_total_episode_closest_keypoint_max_dist[env_ids] = 0.0
         self.successes[env_ids] = 0
         self.reset_goal_buf[env_ids] = False
         self.near_goal_steps[env_ids] = 0
@@ -835,11 +950,25 @@ class SimToolRealDirectEnv(DirectRLEnv):
         self.furthest_hand_dist[env_ids] = -1.0
         self.action_queue[env_ids] = 0.0
         self.object_state_queue[env_ids] = 0.0
+        self.rb_forces[env_ids] = 0.0
+        self.rb_torques[env_ids] = 0.0
         self.random_force_prob[env_ids] = sample_log_uniform(
             self.cfg.force_prob_range[0], self.cfg.force_prob_range[1], len(env_ids), self.device
         )
         self.random_torque_prob[env_ids] = sample_log_uniform(
             self.cfg.torque_prob_range[0], self.cfg.torque_prob_range[1], len(env_ids), self.device
+        )
+        self.random_lin_vel_impulse_prob[env_ids] = sample_log_uniform(
+            self.cfg.lin_vel_impulse_prob_range[0],
+            self.cfg.lin_vel_impulse_prob_range[1],
+            len(env_ids),
+            self.device,
+        )
+        self.random_ang_vel_impulse_prob[env_ids] = sample_log_uniform(
+            self.cfg.ang_vel_impulse_prob_range[0],
+            self.cfg.ang_vel_impulse_prob_range[1],
+            len(env_ids),
+            self.device,
         )
 
         self._reset_table_and_object(env_ids)
@@ -900,6 +1029,18 @@ class SimToolRealDirectEnv(DirectRLEnv):
         goal_state[:, 7:13] = 0.0
         self.goal_object.write_root_state_to_sim(goal_state, env_ids=env_ids)
         self.goal_states[env_ids] = local_goal
+
+    def _reset_goal_tracking(self, env_ids: torch.Tensor) -> None:
+        self.reset_goal_buf[env_ids] = False
+        self.near_goal_steps[env_ids] = 0
+        self.prev_total_episode_closest_keypoint_max_dist[env_ids] = self.total_episode_closest_keypoint_max_dist[env_ids]
+        self.total_episode_closest_keypoint_max_dist[env_ids] += torch.where(
+            self.closest_keypoint_max_dist[env_ids] > 0,
+            self.closest_keypoint_max_dist[env_ids],
+            torch.zeros_like(self.closest_keypoint_max_dist[env_ids]),
+        )
+        self.closest_keypoint_max_dist[env_ids] = -1.0
+        self.closest_keypoint_max_dist_fixed_size[env_ids] = -1.0
 
     def _sample_delta_quat(self, quat: torch.Tensor, delta_degrees: float) -> torch.Tensor:
         if delta_degrees <= 0.0:
