@@ -11,9 +11,12 @@ mkdir -p outputs
 
 # Old Isaac Gym is safest on the RTX 3090. With CUDA_VISIBLE_DEVICES=0, the
 # process sees the physical 3090 as cuda:0.
+export CUDA_DEVICE_ORDER="${CUDA_DEVICE_ORDER:-PCI_BUS_ID}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 PYTHON_BIN="${PYTHON_BIN:-./.venv/bin/python}"
+PYTHON_DIR="$(dirname "${PYTHON_BIN}")"
+export PATH="$(cd "${PYTHON_DIR}" && pwd):${PATH}"
 
 NUM_ENVS="${NUM_ENVS:-12288}"
 NUM_BLOCKS="${NUM_BLOCKS:-6}"
@@ -65,7 +68,11 @@ else
   EXTRA_ARGS+=(--no-wandb-activate)
 fi
 
-nohup "${PYTHON_BIN}" isaacgymenvs/launch_training.py \
+echo "Starting ${RUN_NAME}"
+echo "GPU: physical 0 / RTX 3090 via CUDA_DEVICE_ORDER=${CUDA_DEVICE_ORDER} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+echo "Log: ${LOG_PATH}"
+
+"${PYTHON_BIN}" isaacgymenvs/launch_training.py \
   --custom-experiment-name "${RUN_NAME}" \
   --num-envs "${NUM_ENVS}" \
   --num-blocks "${NUM_BLOCKS}" \
@@ -75,12 +82,4 @@ nohup "${PYTHON_BIN}" isaacgymenvs/launch_training.py \
   --wandb-entity "${WANDB_ENTITY}" \
   --wandb-group "${WANDB_GROUP}" \
   "${EXTRA_ARGS[@]}" \
-  > "${LOG_PATH}" 2>&1 &
-
-PID=$!
-
-echo "Started ${RUN_NAME}"
-echo "PID: ${PID}"
-echo "GPU: physical 0 / RTX 3090 via CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
-echo "Log: ${LOG_PATH}"
-echo "Tail: tail -f ${LOG_PATH}"
+  2>&1 | tee "${LOG_PATH}"
