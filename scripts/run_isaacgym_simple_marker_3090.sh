@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-RUN_NAME="${RUN_NAME:-isaacgym_simple_marker_3090}"
+RUN_NAME="${RUN_NAME:-isaacgym_simple_marker_3090_video}"
 LOG_STAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_PATH="${LOG_PATH:-outputs/${RUN_NAME}_${LOG_STAMP}.log}"
 
@@ -16,16 +16,16 @@ PYTHON_BIN="${PYTHON_BIN:-./.venv/bin/python}"
 PYTHON_DIR="$(dirname "${PYTHON_BIN}")"
 export PATH="$(cd "${PYTHON_DIR}" && pwd):${PATH}"
 
-NUM_ENVS="${NUM_ENVS:-12288}"
+NUM_ENVS="${NUM_ENVS:-4092}"
 NUM_BLOCKS="${NUM_BLOCKS:-6}"
 MAX_EPOCHS="${MAX_EPOCHS:-}"
 HORIZON_LENGTH="${HORIZON_LENGTH:-}"
-MINIBATCH_SIZE="${MINIBATCH_SIZE:-98304}"
+MINIBATCH_SIZE="${MINIBATCH_SIZE:-32736}"
 MINI_EPOCHS="${MINI_EPOCHS:-}"
 SAVE_FREQUENCY="${SAVE_FREQUENCY:-}"
 SEQ_LENGTH="${SEQ_LENGTH:-}"
 
-CAPTURE_VIDEO="${CAPTURE_VIDEO:-false}"
+CAPTURE_VIDEO="${CAPTURE_VIDEO:-true}"
 CAPTURE_VIDEO_FREQ="${CAPTURE_VIDEO_FREQ:-6000}"
 CAPTURE_VIDEO_LEN="${CAPTURE_VIDEO_LEN:-600}"
 
@@ -69,6 +69,7 @@ fi
 echo "Starting ${RUN_NAME}"
 echo "GPU: physical 0 / RTX 3090 via CUDA_DEVICE_ORDER=${CUDA_DEVICE_ORDER} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "Simplification: one fixed marker asset, no object size/density randomization, no delay/noise"
+echo "Video capture: ${CAPTURE_VIDEO}, freq=${CAPTURE_VIDEO_FREQ}, len=${CAPTURE_VIDEO_LEN}"
 echo "Log: ${LOG_PATH}"
 
 "${PYTHON_BIN}" isaacgymenvs/launch_training.py \
