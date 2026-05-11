@@ -59,7 +59,7 @@ class LaunchTrainingArgs:
 
     # === Simplified debug task ===
     simple_marker_debug: bool = False
-    """Use one fixed marker asset, disable delay/noise, and keep the original reward/training stack."""
+    """Use one fixed hammer asset, disable delay/noise, and keep the original reward/training stack."""
 
     # === Video ===
     capture_video: bool = True
@@ -167,13 +167,14 @@ def launch_training(args: LaunchTrainingArgs) -> None:
     if args.simple_marker_debug:
         cmd_parts.extend(
             [
-                "task.env.handleHeadTypes=[marker]",
+                "task.env.handleHeadTypes=[hammer]",
+                "task.env.handleHeadDistributionIndex=0",
                 "task.env.handleHeadNumObjectsPerDistribution=1",
                 "task.env.fixedHandleHeadObject=True",
-                "task.env.fixedHandleScale=[0.1125,0.0225]",
-                "task.env.fixedHeadScale=[0.02,0.0075,0.0075]",
-                "task.env.fixedHandleDensity=400.0",
-                "task.env.fixedHeadDensity=400.0",
+                "task.env.fixedHandleScale=[0.225,0.03,0.0225]",
+                "task.env.fixedHeadScale=[0.04,0.085,0.04]",
+                "task.env.fixedHandleDensity=450.0",
+                "task.env.fixedHeadDensity=1400.0",
                 "task.env.objectScaleNoiseMultiplierRange=[1.0,1.0]",
                 "task.env.useObsDelay=False",
                 "task.env.useActionDelay=False",

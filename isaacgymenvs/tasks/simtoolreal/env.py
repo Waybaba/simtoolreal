@@ -1677,6 +1677,15 @@ class SimToolReal(VecTask):
         object_size_distributions = [
             obj for obj in OBJECT_SIZE_DISTRIBUTIONS if obj.type in handle_head_types
         ]
+        distribution_index = self.cfg["env"].get("handleHeadDistributionIndex", None)
+        if distribution_index is not None:
+            distribution_index = int(distribution_index)
+            if distribution_index < 0 or distribution_index >= len(object_size_distributions):
+                raise ValueError(
+                    f"handleHeadDistributionIndex={distribution_index} is out of range "
+                    f"for {len(object_size_distributions)} selected distributions"
+                )
+            object_size_distributions = [object_size_distributions[distribution_index]]
 
         files_list = []
         scales_list = []

@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-RUN_NAME="${RUN_NAME:-isaacgym_simple_marker_3090_video}"
+RUN_NAME="${RUN_NAME:-isaacgym_simple_hammer_3090_video}"
 LOG_STAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_PATH="${LOG_PATH:-outputs/${RUN_NAME}_${LOG_STAMP}.log}"
 
@@ -68,7 +68,7 @@ fi
 
 echo "Starting ${RUN_NAME}"
 echo "GPU: physical 0 / RTX 3090 via CUDA_DEVICE_ORDER=${CUDA_DEVICE_ORDER} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
-echo "Simplification: one fixed marker asset, no object size/density randomization, no delay/noise"
+echo "Simplification: one fixed hammer asset, no object size/density randomization, no delay/noise"
 echo "Video capture: ${CAPTURE_VIDEO}, freq=${CAPTURE_VIDEO_FREQ}, len=${CAPTURE_VIDEO_LEN}"
 echo "Log: ${LOG_PATH}"
 

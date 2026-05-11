@@ -185,6 +185,7 @@ env:
 
   handleHeadTypes: ["hammer", "screwdriver", "marker", "spatula", "eraser", "brush"]
   handleHeadNumObjectsPerDistribution: 100
+  handleHeadDistributionIndex: null
   fixedHandleHeadObject: False
   fixedHandleScale: null
   fixedHeadScale: null
