@@ -184,6 +184,12 @@ env:
   goalObjectPose: ${eval:"None"}  # If None, does nothing. Otherwise, forces the goal object pose to be this value. Must be a 7-element list of [x, y, z, qx, qy, qz, qw]
 
   handleHeadTypes: ["hammer", "screwdriver", "marker", "spatula", "eraser", "brush"]
+  handleHeadNumObjectsPerDistribution: 100
+  fixedHandleHeadObject: False
+  fixedHandleScale: null
+  fixedHeadScale: null
+  fixedHandleDensity: null
+  fixedHeadDensity: null
 
   # asset Friction settings
   modifyAssetFrictions: True

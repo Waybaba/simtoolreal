@@ -1654,7 +1654,16 @@ class SimToolReal(VecTask):
         # The head is at +x from the handle
         # There is no relative rotation between the handle and head
 
-        NUM_OBJECTS_PER_TYPE = 100
+        NUM_OBJECTS_PER_TYPE = int(
+            self.cfg["env"].get("handleHeadNumObjectsPerDistribution", 100)
+        )
+        if NUM_OBJECTS_PER_TYPE <= 0:
+            raise ValueError(
+                f"handleHeadNumObjectsPerDistribution must be positive, got {NUM_OBJECTS_PER_TYPE}"
+            )
+        FIXED_HANDLE_HEAD_OBJECT = bool(
+            self.cfg["env"].get("fixedHandleHeadObject", False)
+        )
         np.random.seed(42)
 
         from isaacgymenvs.tasks.simtoolreal.generate_objects import (
@@ -1674,22 +1683,77 @@ class SimToolReal(VecTask):
         for object_size_distribution in object_size_distributions:
             handle_head_type = object_size_distribution.type
 
-            # Sample densities
-            handle_densities = object_size_distribution.sample_handle_densities(
-                NUM_OBJECTS_PER_TYPE
-            )
-            head_densities = object_size_distribution.sample_head_densities(
-                NUM_OBJECTS_PER_TYPE
-            )
+            if FIXED_HANDLE_HEAD_OBJECT:
+                handle_scale = self.cfg["env"].get("fixedHandleScale", None)
+                if handle_scale is None:
+                    handle_scale = (
+                        np.asarray(object_size_distribution.handle_min_lengths)
+                        + np.asarray(object_size_distribution.handle_max_lengths)
+                    ) / 2.0
+                else:
+                    handle_scale = np.asarray(handle_scale, dtype=np.float64)
+                if len(handle_scale) != len(object_size_distribution.handle_min_lengths):
+                    raise ValueError(
+                        f"fixedHandleScale has length {len(handle_scale)} but {handle_head_type} "
+                        f"expects {len(object_size_distribution.handle_min_lengths)}"
+                    )
+                handle_scales = np.tile(handle_scale, (NUM_OBJECTS_PER_TYPE, 1))
 
-            # Sample scales
-            # Currently different for each object
-            handle_scales = object_size_distribution.sample_handle_scales(
-                NUM_OBJECTS_PER_TYPE
-            )
-            head_scales = object_size_distribution.sample_head_scales(
-                NUM_OBJECTS_PER_TYPE
-            )
+                if object_size_distribution.head_min_lengths is None:
+                    head_scales = None
+                else:
+                    head_scale = self.cfg["env"].get("fixedHeadScale", None)
+                    if head_scale is None:
+                        head_scale = (
+                            np.asarray(object_size_distribution.head_min_lengths)
+                            + np.asarray(object_size_distribution.head_max_lengths)
+                        ) / 2.0
+                    else:
+                        head_scale = np.asarray(head_scale, dtype=np.float64)
+                    if len(head_scale) != len(object_size_distribution.head_min_lengths):
+                        raise ValueError(
+                            f"fixedHeadScale has length {len(head_scale)} but {handle_head_type} "
+                            f"expects {len(object_size_distribution.head_min_lengths)}"
+                        )
+                    head_scales = np.tile(head_scale, (NUM_OBJECTS_PER_TYPE, 1))
+
+                handle_density = self.cfg["env"].get("fixedHandleDensity", None)
+                if handle_density is None:
+                    handle_density = (
+                        object_size_distribution.handle_min_density
+                        + object_size_distribution.handle_max_density
+                    ) / 2.0
+                handle_densities = np.full(
+                    NUM_OBJECTS_PER_TYPE, float(handle_density)
+                )
+
+                if object_size_distribution.head_min_density is None:
+                    head_densities = None
+                else:
+                    head_density = self.cfg["env"].get("fixedHeadDensity", None)
+                    if head_density is None:
+                        head_density = (
+                            object_size_distribution.head_min_density
+                            + object_size_distribution.head_max_density
+                        ) / 2.0
+                    head_densities = np.full(NUM_OBJECTS_PER_TYPE, float(head_density))
+            else:
+                # Sample densities
+                handle_densities = object_size_distribution.sample_handle_densities(
+                    NUM_OBJECTS_PER_TYPE
+                )
+                head_densities = object_size_distribution.sample_head_densities(
+                    NUM_OBJECTS_PER_TYPE
+                )
+
+                # Sample scales
+                # Currently different for each object
+                handle_scales = object_size_distribution.sample_handle_scales(
+                    NUM_OBJECTS_PER_TYPE
+                )
+                head_scales = object_size_distribution.sample_head_scales(
+                    NUM_OBJECTS_PER_TYPE
+                )
             assert handle_scales.shape in [
                 (NUM_OBJECTS_PER_TYPE, 2),
                 (NUM_OBJECTS_PER_TYPE, 3),

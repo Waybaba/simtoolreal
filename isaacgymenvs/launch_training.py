@@ -57,6 +57,10 @@ class LaunchTrainingArgs:
     seq_length: Optional[int] = None
     """Optional RNN sequence length override."""
 
+    # === Simplified debug task ===
+    simple_marker_debug: bool = False
+    """Use one fixed marker asset, disable delay/noise, and keep the original reward/training stack."""
+
     # === Video ===
     capture_video: bool = True
     """Whether to capture periodic rollout videos during training."""
@@ -159,6 +163,26 @@ def launch_training(args: LaunchTrainingArgs) -> None:
         f"task.env.torqueScale={args.torque_scale}",
         f"task.env.objectAngVelPenaltyScale={args.object_ang_vel_penalty_scale}",
     ]
+
+    if args.simple_marker_debug:
+        cmd_parts.extend(
+            [
+                "task.env.handleHeadTypes=[marker]",
+                "task.env.handleHeadNumObjectsPerDistribution=1",
+                "task.env.fixedHandleHeadObject=True",
+                "task.env.fixedHandleScale=[0.1125,0.0225]",
+                "task.env.fixedHeadScale=[0.02,0.0075,0.0075]",
+                "task.env.fixedHandleDensity=400.0",
+                "task.env.fixedHeadDensity=400.0",
+                "task.env.objectScaleNoiseMultiplierRange=[1.0,1.0]",
+                "task.env.useObsDelay=False",
+                "task.env.useActionDelay=False",
+                "task.env.useObjectStateDelayNoise=False",
+                "task.env.objectStateXyzNoiseStd=0.0",
+                "task.env.objectStateRotationNoiseDegrees=0.0",
+                "task.env.jointVelocityObsNoiseStd=0.0",
+            ]
+        )
 
     if args.checkpoint is not None:
         cmd_parts.append(f"checkpoint={args.checkpoint}")
