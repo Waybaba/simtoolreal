@@ -121,6 +121,7 @@ env:
   # Thus, it records a video every 600-1500s (10-25 minutes) of real time
   capture_video_freq: 6_000
   capture_video_len: 600
+  capture_video_resolution_reduction: 2
 
   turn_off_extra_obs: False
   turn_off_extra_obs_slowly: False

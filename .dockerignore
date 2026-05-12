@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+.vscode
+__pycache__
+*.py[cod]
+*.log
+nohup.out
+.pytest_cache
+.ruff_cache
+.mypy_cache
+outputs
+runs
+wandb
+*.egg-info
+src/isaaclab_env/*.egg-info
+rl_games/*.egg-info

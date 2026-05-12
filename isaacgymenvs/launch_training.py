@@ -71,6 +71,9 @@ class LaunchTrainingArgs:
     capture_video_len: int = 600
     """Number of frames per captured video."""
 
+    capture_video_resolution_reduction: int = 2
+    """Divide Isaac Gym camera width/height by this factor. 2 is 4x pixels versus the old value 4."""
+
     # === Wandb ===
     wandb_entity: str = "waybabag"
     """Wandb entity (user or team)."""
@@ -156,6 +159,7 @@ def launch_training(args: LaunchTrainingArgs) -> None:
         f"task.env.capture_video={args.capture_video}",
         f"task.env.capture_video_freq={args.capture_video_freq}",
         f"task.env.capture_video_len={args.capture_video_len}",
+        f"task.env.capture_video_resolution_reduction={args.capture_video_resolution_reduction}",
         "task=SimToolRealLSTMAsymmetric",
         "task.env.objectScaleNoiseMultiplierRange=[0.9,1.1]",
         "task.env.forceConsecutiveNearGoalSteps=True",

@@ -12,6 +12,7 @@ class WandbAlgoObserver(AlgoObserver):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
+        self.enabled = True
 
     def before_init(self, base_name, config, experiment_name):
         """
@@ -51,6 +52,13 @@ class WandbAlgoObserver(AlgoObserver):
             wandb.define_metric("*", step_metric="global_step")
         except Exception as exc:
             print(f'Could not initialize WandB! {exc}')
+            self.enabled = False
+            return
+
+        if wandb.run is None:
+            print("Could not initialize WandB! wandb.run is None")
+            self.enabled = False
+            return
 
         with open(os.path.join(wandb.run.dir, 'diff.patch'), 'w') as f:
             os.system(f'cd {os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))} && git diff > {f.name}')

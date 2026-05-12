@@ -28,6 +28,7 @@ SEQ_LENGTH="${SEQ_LENGTH:-}"
 CAPTURE_VIDEO="${CAPTURE_VIDEO:-true}"
 CAPTURE_VIDEO_FREQ="${CAPTURE_VIDEO_FREQ:-6000}"
 CAPTURE_VIDEO_LEN="${CAPTURE_VIDEO_LEN:-600}"
+CAPTURE_VIDEO_RESOLUTION_REDUCTION="${CAPTURE_VIDEO_RESOLUTION_REDUCTION:-2}"
 
 WANDB_ACTIVATE="${WANDB_ACTIVATE:-true}"
 WANDB_PROJECT="${WANDB_PROJECT:-simtoolreal}"
@@ -69,7 +70,7 @@ fi
 echo "Starting ${RUN_NAME}"
 echo "GPU: physical 0 / RTX 3090 via CUDA_DEVICE_ORDER=${CUDA_DEVICE_ORDER} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "Simplification: one fixed hammer asset, no object size/density randomization, no delay/noise"
-echo "Video capture: ${CAPTURE_VIDEO}, freq=${CAPTURE_VIDEO_FREQ}, len=${CAPTURE_VIDEO_LEN}"
+echo "Video capture: ${CAPTURE_VIDEO}, freq=${CAPTURE_VIDEO_FREQ}, len=${CAPTURE_VIDEO_LEN}, resolution_reduction=${CAPTURE_VIDEO_RESOLUTION_REDUCTION}"
 echo "Log: ${LOG_PATH}"
 
 "${PYTHON_BIN}" isaacgymenvs/launch_training.py \
@@ -78,6 +79,7 @@ echo "Log: ${LOG_PATH}"
   --num-blocks "${NUM_BLOCKS}" \
   --capture-video-freq "${CAPTURE_VIDEO_FREQ}" \
   --capture-video-len "${CAPTURE_VIDEO_LEN}" \
+  --capture-video-resolution-reduction "${CAPTURE_VIDEO_RESOLUTION_REDUCTION}" \
   --wandb-project "${WANDB_PROJECT}" \
   --wandb-entity "${WANDB_ENTITY}" \
   --wandb-group "${WANDB_GROUP}" \
