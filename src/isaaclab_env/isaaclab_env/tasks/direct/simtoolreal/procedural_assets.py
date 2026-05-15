@@ -219,6 +219,12 @@ def generate_handle_head_variants(
     object_base_size: float,
     seed: int = 42,
     max_variants: int | None = None,
+    distribution_index: int | None = None,
+    fixed_handle_head_object: bool = False,
+    fixed_handle_scale: Iterable[float] | None = None,
+    fixed_head_scale: Iterable[float] | None = None,
+    fixed_handle_density: float | None = None,
+    fixed_head_density: float | None = None,
 ) -> list[ProceduralObjectVariant]:
     """Generate the same handle/head URDF family used by the Isaac Gym task.
 
@@ -249,16 +255,71 @@ def generate_handle_head_variants(
     distributions = [obj for obj in object_sizes.OBJECT_SIZE_DISTRIBUTIONS if obj.type in requested_types]
     if not distributions:
         raise ValueError(f"No procedural object distributions selected from {sorted(requested_types)}")
+    if distribution_index is not None:
+        if distribution_index < 0 or distribution_index >= len(distributions):
+            raise ValueError(
+                f"distribution_index={distribution_index} is out of range for {len(distributions)} selected distributions"
+            )
+        distributions = [distributions[distribution_index]]
 
     rng_state = np.random.get_state()
     np.random.seed(seed)
     try:
         variants: list[ProceduralObjectVariant] = []
         for distribution in distributions:
-            handle_densities = distribution.sample_handle_densities(num_objects_per_distribution)
-            head_densities = distribution.sample_head_densities(num_objects_per_distribution)
-            handle_scales = distribution.sample_handle_scales(num_objects_per_distribution)
-            head_scales = distribution.sample_head_scales(num_objects_per_distribution)
+            if fixed_handle_head_object:
+                if fixed_handle_scale is None:
+                    handle_scale = (
+                        np.asarray(distribution.handle_min_lengths, dtype=np.float64)
+                        + np.asarray(distribution.handle_max_lengths, dtype=np.float64)
+                    ) / 2.0
+                else:
+                    handle_scale = np.asarray(tuple(fixed_handle_scale), dtype=np.float64)
+                if len(handle_scale) != len(distribution.handle_min_lengths):
+                    raise ValueError(
+                        f"fixed_handle_scale has length {len(handle_scale)} but {distribution.type} "
+                        f"expects {len(distribution.handle_min_lengths)}"
+                    )
+                handle_scales = np.tile(handle_scale, (num_objects_per_distribution, 1))
+
+                if distribution.head_min_lengths is None:
+                    head_scales = None
+                else:
+                    if fixed_head_scale is None:
+                        head_scale = (
+                            np.asarray(distribution.head_min_lengths, dtype=np.float64)
+                            + np.asarray(distribution.head_max_lengths, dtype=np.float64)
+                        ) / 2.0
+                    else:
+                        head_scale = np.asarray(tuple(fixed_head_scale), dtype=np.float64)
+                    if len(head_scale) != len(distribution.head_min_lengths):
+                        raise ValueError(
+                            f"fixed_head_scale has length {len(head_scale)} but {distribution.type} "
+                            f"expects {len(distribution.head_min_lengths)}"
+                        )
+                    head_scales = np.tile(head_scale, (num_objects_per_distribution, 1))
+
+                handle_density = (
+                    float(fixed_handle_density)
+                    if fixed_handle_density is not None
+                    else 0.5 * (distribution.handle_min_density + distribution.handle_max_density)
+                )
+                handle_densities = np.full(num_objects_per_distribution, handle_density)
+
+                if distribution.head_min_density is None:
+                    head_densities = None
+                else:
+                    head_density = (
+                        float(fixed_head_density)
+                        if fixed_head_density is not None
+                        else 0.5 * (distribution.head_min_density + distribution.head_max_density)
+                    )
+                    head_densities = np.full(num_objects_per_distribution, head_density)
+            else:
+                handle_densities = distribution.sample_handle_densities(num_objects_per_distribution)
+                head_densities = distribution.sample_head_densities(num_objects_per_distribution)
+                handle_scales = distribution.sample_handle_scales(num_objects_per_distribution)
+                head_scales = distribution.sample_head_scales(num_objects_per_distribution)
 
             for index in range(num_objects_per_distribution):
                 handle_scale = tuple(float(x) for x in handle_scales[index])

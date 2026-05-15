@@ -90,6 +90,7 @@ parser.add_argument("--critic_coef", type=float, default=4.0)
 parser.add_argument("--bounds_loss_coef", type=float, default=1.0e-4)
 parser.add_argument("--max_grad_norm", type=float, default=1.0)
 parser.add_argument("--kl_threshold", type=float, default=0.016)
+parser.add_argument("--adaptive_lr", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--mixed_precision", action=argparse.BooleanOptionalAction, default=True)
 
 # Network config matched to old LSTM actor / asymmetric critic.
@@ -145,6 +146,30 @@ parser.add_argument("--force_consecutive_near_goal_steps", action=argparse.Boole
 parser.add_argument("--force_scale", type=float, default=20.0)
 parser.add_argument("--torque_scale", type=float, default=2.0)
 parser.add_argument("--object_ang_vel_penalty_scale", type=float, default=0.0)
+parser.add_argument("--simple_hammer_debug", action=argparse.BooleanOptionalAction, default=False, help="Match the simplified Isaac Gym run: one fixed hammer, no size randomization, delay, or observation noise.")
+parser.add_argument("--easy_goal_debug", action=argparse.BooleanOptionalAction, default=False, help="Extra curriculum mode: fixed hammer, fixed no-rotation object, fixed goal above the table, no perturbations.")
+parser.add_argument("--handle_head_types", type=str, nargs="+", default=None)
+parser.add_argument("--handle_head_distribution_index", type=int, default=None)
+parser.add_argument("--procedural_objects_per_distribution", type=int, default=None)
+parser.add_argument("--fixed_handle_head_object", action=argparse.BooleanOptionalAction, default=None)
+parser.add_argument("--fixed_handle_scale", type=float, nargs="+", default=None)
+parser.add_argument("--fixed_head_scale", type=float, nargs="+", default=None)
+parser.add_argument("--fixed_handle_density", type=float, default=None)
+parser.add_argument("--fixed_head_density", type=float, default=None)
+parser.add_argument("--reset_position_noise_x", type=float, default=None)
+parser.add_argument("--reset_position_noise_y", type=float, default=None)
+parser.add_argument("--reset_position_noise_z", type=float, default=None)
+parser.add_argument("--reset_dof_pos_noise_fingers", type=float, default=None)
+parser.add_argument("--reset_dof_pos_noise_arm", type=float, default=None)
+parser.add_argument("--reset_dof_vel_noise", type=float, default=None)
+parser.add_argument("--use_action_delay", action=argparse.BooleanOptionalAction, default=None)
+parser.add_argument("--use_object_state_delay_noise", action=argparse.BooleanOptionalAction, default=None)
+parser.add_argument("--object_state_xyz_noise_std", type=float, default=None)
+parser.add_argument("--object_state_rotation_noise_degrees", type=float, default=None)
+parser.add_argument("--joint_velocity_obs_noise_std", type=float, default=None)
+parser.add_argument("--randomize_object_rotation", action=argparse.BooleanOptionalAction, default=None)
+parser.add_argument("--fixed_goal_pos", type=float, nargs=3, default=None)
+parser.add_argument("--fixed_goal_quat", type=float, nargs=4, default=None)
 
 CleanRLAppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True, enable_cameras=False)
@@ -180,6 +205,8 @@ class TrainStats:
     fps: float
     reward_mean: float
     episodic_success_mean: float
+    episode_success_rate_any: float
+    episode_success_count_mean: float
     actor_loss: float
     critic_loss: float
     entropy: float
@@ -1177,7 +1204,9 @@ def _load_checkpoint(
     state_rms: RunningMeanStd | None,
     value_normalizer: ValueNormalizer | None,
 ) -> tuple[int, int]:
-    checkpoint = torch.load(path, map_location="cpu")
+    # These checkpoints are created by this script and include argparse metadata
+    # with Path objects, so PyTorch's weights_only=True default cannot load them.
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     agent.load_state_dict(checkpoint["agent"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     if obs_rms is not None and checkpoint.get("obs_rms") is not None:
@@ -1241,11 +1270,118 @@ def main() -> None:
     env_cfg.log_dir = str(run_dir)
 
     # Match old launch_training.py overrides.
+    if args_cli.simple_hammer_debug:
+        args_cli.handle_head_types = ["hammer"]
+        args_cli.handle_head_distribution_index = 0
+        args_cli.procedural_objects_per_distribution = 1
+        args_cli.fixed_handle_head_object = True
+        args_cli.fixed_handle_scale = [0.225, 0.03, 0.0225]
+        args_cli.fixed_head_scale = [0.04, 0.085, 0.04]
+        args_cli.fixed_handle_density = 450.0
+        args_cli.fixed_head_density = 1400.0
+        args_cli.object_scale_noise_min = 1.0
+        args_cli.object_scale_noise_max = 1.0
+        args_cli.use_action_delay = False
+        args_cli.use_object_state_delay_noise = False
+        args_cli.object_state_xyz_noise_std = 0.0
+        args_cli.object_state_rotation_noise_degrees = 0.0
+        args_cli.joint_velocity_obs_noise_std = 0.0
+
+    if args_cli.easy_goal_debug:
+        args_cli.simple_hammer_debug = True
+        args_cli.handle_head_types = ["hammer"]
+        args_cli.handle_head_distribution_index = 0
+        args_cli.procedural_objects_per_distribution = 1
+        args_cli.fixed_handle_head_object = True
+        args_cli.fixed_handle_scale = [0.225, 0.03, 0.0225]
+        args_cli.fixed_head_scale = [0.04, 0.085, 0.04]
+        args_cli.fixed_handle_density = 450.0
+        args_cli.fixed_head_density = 1400.0
+        args_cli.object_scale_noise_min = 1.0
+        args_cli.object_scale_noise_max = 1.0
+        args_cli.reset_position_noise_x = 0.0
+        args_cli.reset_position_noise_y = 0.0
+        args_cli.reset_position_noise_z = 0.0
+        args_cli.reset_dof_pos_noise_fingers = 0.0
+        args_cli.reset_dof_pos_noise_arm = 0.0
+        args_cli.reset_dof_vel_noise = 0.0
+        args_cli.use_action_delay = False
+        args_cli.use_object_state_delay_noise = False
+        args_cli.object_state_xyz_noise_std = 0.0
+        args_cli.object_state_rotation_noise_degrees = 0.0
+        args_cli.joint_velocity_obs_noise_std = 0.0
+        args_cli.randomize_object_rotation = False
+        args_cli.fixed_goal_pos = [0.0, 0.0, 0.78]
+        args_cli.fixed_goal_quat = [1.0, 0.0, 0.0, 0.0]
+        args_cli.force_scale = 0.0
+        args_cli.torque_scale = 0.0
+        args_cli.force_consecutive_near_goal_steps = False
+
+    object_variant_overrides = False
+    if args_cli.handle_head_types is not None:
+        env_cfg.handle_head_types = tuple(args_cli.handle_head_types)
+        object_variant_overrides = True
+    if args_cli.handle_head_distribution_index is not None:
+        env_cfg.handle_head_distribution_index = args_cli.handle_head_distribution_index
+        object_variant_overrides = True
+    if args_cli.procedural_objects_per_distribution is not None:
+        env_cfg.procedural_objects_per_distribution = args_cli.procedural_objects_per_distribution
+        object_variant_overrides = True
+    if args_cli.fixed_handle_head_object is not None:
+        env_cfg.fixed_handle_head_object = args_cli.fixed_handle_head_object
+        object_variant_overrides = True
+    if args_cli.fixed_handle_scale is not None:
+        env_cfg.fixed_handle_scale = tuple(args_cli.fixed_handle_scale)
+        object_variant_overrides = True
+    if args_cli.fixed_head_scale is not None:
+        env_cfg.fixed_head_scale = tuple(args_cli.fixed_head_scale)
+        object_variant_overrides = True
+    if args_cli.fixed_handle_density is not None:
+        env_cfg.fixed_handle_density = args_cli.fixed_handle_density
+        object_variant_overrides = True
+    if args_cli.fixed_head_density is not None:
+        env_cfg.fixed_head_density = args_cli.fixed_head_density
+        object_variant_overrides = True
+    if object_variant_overrides:
+        env_cfg.__post_init__()
+
     env_cfg.object_scale_noise_multiplier_range = (args_cli.object_scale_noise_min, args_cli.object_scale_noise_max)
     env_cfg.force_consecutive_near_goal_steps = args_cli.force_consecutive_near_goal_steps
     env_cfg.force_scale = args_cli.force_scale
     env_cfg.torque_scale = args_cli.torque_scale
     env_cfg.object_ang_vel_penalty_scale = args_cli.object_ang_vel_penalty_scale
+    if args_cli.reset_position_noise_x is not None:
+        env_cfg.reset_position_noise_x = args_cli.reset_position_noise_x
+    if args_cli.reset_position_noise_y is not None:
+        env_cfg.reset_position_noise_y = args_cli.reset_position_noise_y
+    if args_cli.reset_position_noise_z is not None:
+        env_cfg.reset_position_noise_z = args_cli.reset_position_noise_z
+    if args_cli.reset_dof_pos_noise_fingers is not None:
+        env_cfg.reset_dof_pos_noise_fingers = args_cli.reset_dof_pos_noise_fingers
+    if args_cli.reset_dof_pos_noise_arm is not None:
+        env_cfg.reset_dof_pos_noise_arm = args_cli.reset_dof_pos_noise_arm
+    if args_cli.reset_dof_vel_noise is not None:
+        env_cfg.reset_dof_vel_noise = args_cli.reset_dof_vel_noise
+    if args_cli.use_action_delay is not None:
+        env_cfg.use_action_delay = args_cli.use_action_delay
+    if args_cli.use_object_state_delay_noise is not None:
+        env_cfg.use_object_state_delay_noise = args_cli.use_object_state_delay_noise
+    if args_cli.object_state_xyz_noise_std is not None:
+        env_cfg.object_state_xyz_noise_std = args_cli.object_state_xyz_noise_std
+    if args_cli.object_state_rotation_noise_degrees is not None:
+        env_cfg.object_state_rotation_noise_degrees = args_cli.object_state_rotation_noise_degrees
+    if args_cli.joint_velocity_obs_noise_std is not None:
+        env_cfg.joint_velocity_obs_noise_std = args_cli.joint_velocity_obs_noise_std
+    if args_cli.randomize_object_rotation is not None:
+        env_cfg.randomize_object_rotation = args_cli.randomize_object_rotation
+    if args_cli.fixed_goal_pos is not None:
+        env_cfg.fixed_goal_pos = tuple(args_cli.fixed_goal_pos)
+    if args_cli.fixed_goal_quat is not None:
+        env_cfg.fixed_goal_quat = tuple(args_cli.fixed_goal_quat)
+    if args_cli.simple_hammer_debug:
+        print("[CLEANRL] simple_hammer_debug=True: one fixed hammer, no scale randomization, no action/object delay/noise", flush=True)
+    if args_cli.easy_goal_debug:
+        print("[CLEANRL] easy_goal_debug=True: fixed object pose and fixed goal above the table", flush=True)
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.capture_video else None)
     wandb_run = None
@@ -1307,6 +1443,7 @@ def main() -> None:
         global_step = 0
         if args_cli.checkpoint is not None:
             start_update, global_step = _load_checkpoint(args_cli.checkpoint, agent, optimizer, obs_rms, state_rms, value_normalizer)
+            _set_lr(optimizer, args_cli.learning_rate)
             print(f"[CLEANRL] restored checkpoint={args_cli.checkpoint} update={start_update} global_step={global_step}", flush=True)
 
         policy_obs = obs["policy"].to(device)
@@ -1315,6 +1452,8 @@ def main() -> None:
         actor_state = agent.actor.initial_state(args_cli.num_envs, device)
         current_lr = args_cli.learning_rate
         best_reward = -float("inf")
+        best_episode_success = -float("inf")
+        best_current_success = -float("inf")
         start_time = time.time()
 
         if args_cli.capture_video_env_id < 0 or args_cli.capture_video_env_id >= args_cli.num_envs:
@@ -1601,7 +1740,7 @@ def main() -> None:
                     clipfracs.append(clipfrac.detach())
                     bounds_losses.append(bounds_loss.detach())
 
-                if epoch_kls:
+                if args_cli.adaptive_lr and epoch_kls:
                     mean_epoch_kl = torch.stack(epoch_kls).mean().item()
                     current_lr = _update_adaptive_lr(current_lr, args_cli.kl_threshold, mean_epoch_kl)
                     _set_lr(optimizer, current_lr)
@@ -1609,12 +1748,23 @@ def main() -> None:
             rollout_time = time.time() - rollout_start
             reward_mean = float((rewards_buf / args_cli.reward_scale).mean().item())
             episodic_success = float(env.unwrapped.successes.float().mean().item())
+            prev_episode_successes = getattr(env.unwrapped, "prev_episode_successes", None)
+            if prev_episode_successes is None:
+                episode_success_counts = env.unwrapped.successes.float()
+            else:
+                episode_success_counts = prev_episode_successes.float()
+            episode_success_count_mean = float(episode_success_counts.mean().item())
+            episode_success_rate_any = float((episode_success_counts > 0).float().mean().item())
+            raw_current_success = env.unwrapped.extras.get("log", {}).get("success_rate", 0.0)
+            current_success = float(raw_current_success.item() if torch.is_tensor(raw_current_success) else raw_current_success)
             stats = TrainStats(
                 update=update,
                 global_step=global_step,
                 fps=batch_size / max(rollout_time, 1.0e-6),
                 reward_mean=reward_mean,
                 episodic_success_mean=episodic_success,
+                episode_success_rate_any=episode_success_rate_any,
+                episode_success_count_mean=episode_success_count_mean,
                 actor_loss=float(torch.stack(actor_losses).mean().item()),
                 critic_loss=float(torch.stack(critic_losses).mean().item()),
                 entropy=float(torch.stack(entropies).mean().item()),
@@ -1631,12 +1781,16 @@ def main() -> None:
                 "[CLEANRL] "
                 f"update={stats.update} step={stats.global_step} fps={stats.fps:.0f} "
                 f"reward_mean={stats.reward_mean:.4f} success={stats.episodic_success_mean:.4f} "
+                f"episode_success_rate_any={stats.episode_success_rate_any:.4f} "
+                f"episode_success_count_mean={stats.episode_success_count_mean:.4f} "
                 f"actor_loss={stats.actor_loss:.5f} critic_loss={stats.critic_loss:.5f} "
                 f"entropy={stats.entropy:.4f} kl={stats.approx_kl:.5f} lr={stats.learning_rate:.2e}",
                 flush=True,
             )
 
             if wandb_run is not None:
+                import wandb
+
                 log_payload = {
                     f"train/{key}": value
                     for key, value in asdict(stats).items()
@@ -1655,12 +1809,16 @@ def main() -> None:
                         "losses/approx_kl": stats.approx_kl,
                         "info/last_lr": stats.learning_rate,
                         "info/sigma_mean": stats.sigma_mean,
+                        "train/active_success_count_mean": stats.episodic_success_mean,
+                        "episode/success_rate_any": stats.episode_success_rate_any,
+                        "episode/success_count_mean": stats.episode_success_count_mean,
+                        "episode/success_count_distribution": wandb.Histogram(
+                            episode_success_counts.detach().float().cpu().numpy()
+                        ),
                     }
                 )
                 log_payload.update(_flatten_scalar_dict(env.unwrapped.extras.get("log", {}), prefix="env"))
                 if stats.video_path is not None:
-                    import wandb
-
                     # Old SimToolReal logs under key "video"; keep that exact key
                     # so W&B dashboards/media panels match the Isaac Gym runs.
                     log_payload["video"] = wandb.Video(stats.video_path, fps=video_fps, format="mp4")
@@ -1674,6 +1832,32 @@ def main() -> None:
             if update >= args_cli.save_best_after and reward_mean > best_reward:
                 best_reward = reward_mean
                 _save_checkpoint(ckpt_dir / "best.pt", agent, optimizer, obs_rms, state_rms, value_normalizer, update, global_step, args_cli)
+            if update >= args_cli.save_best_after and episodic_success > best_episode_success:
+                best_episode_success = episodic_success
+                _save_checkpoint(
+                    ckpt_dir / "best_episode_success.pt",
+                    agent,
+                    optimizer,
+                    obs_rms,
+                    state_rms,
+                    value_normalizer,
+                    update,
+                    global_step,
+                    args_cli,
+                )
+            if update >= args_cli.save_best_after and current_success > best_current_success:
+                best_current_success = current_success
+                _save_checkpoint(
+                    ckpt_dir / "best_current_success.pt",
+                    agent,
+                    optimizer,
+                    obs_rms,
+                    state_rms,
+                    value_normalizer,
+                    update,
+                    global_step,
+                    args_cli,
+                )
             _save_checkpoint(ckpt_dir / "latest.pt", agent, optimizer, obs_rms, state_rms, value_normalizer, update, global_step, args_cli)
 
         elapsed = time.time() - start_time

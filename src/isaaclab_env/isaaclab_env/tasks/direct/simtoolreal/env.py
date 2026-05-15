@@ -298,7 +298,7 @@ class SimToolRealDirectEnvCfg(DirectRLEnvCfg):
             rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(),
             mass_props=sim_utils.MassPropertiesCfg(mass=500.0),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.82, 0.56, 0.35), roughness=0.8, metallic=0.0),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.56, 0.40, 0.25), roughness=0.85, metallic=0.0),
         ),
     )
     object_cfg: RigidObjectCfg = RigidObjectCfg(
@@ -325,6 +325,12 @@ class SimToolRealDirectEnvCfg(DirectRLEnvCfg):
 
     handle_head_types = ("hammer", "screwdriver", "marker", "spatula", "eraser", "brush")
     procedural_objects_per_distribution = 100
+    handle_head_distribution_index: int | None = None
+    fixed_handle_head_object = False
+    fixed_handle_scale: tuple[float, ...] | None = None
+    fixed_head_scale: tuple[float, ...] | None = None
+    fixed_handle_density: float | None = None
+    fixed_head_density: float | None = None
     max_object_variants = 0
     procedural_seed = 42
 
@@ -394,15 +400,17 @@ class SimToolRealDirectEnvCfg(DirectRLEnvCfg):
     goal_sampling_type = "delta"
     delta_goal_distance = 0.1
     delta_rotation_degrees = 90.0
+    fixed_goal_pos: tuple[float, float, float] | None = None
+    fixed_goal_quat: tuple[float, float, float, float] | None = None
 
-    debug_visual_ground = False
+    debug_visual_ground = True
     debug_ground_size = (12.0, 12.0, 0.02)
     debug_ground_z = -0.015
-    debug_ground_color = (0.16, 0.17, 0.18)
-    dome_light_intensity = 1800.0
-    dome_light_color = (0.75, 0.75, 0.75)
-    key_light_intensity = 0.0
-    key_light_color = (1.0, 0.94, 0.82)
+    debug_ground_color = (0.055, 0.06, 0.065)
+    dome_light_intensity = 180.0
+    dome_light_color = (0.22, 0.24, 0.28)
+    key_light_intensity = 450.0
+    key_light_color = (0.85, 0.76, 0.62)
     key_light_angle = 2.0
 
     use_action_delay = False
@@ -423,6 +431,12 @@ class SimToolRealDirectEnvCfg(DirectRLEnvCfg):
             object_base_size=self.object_base_size,
             seed=self.procedural_seed,
             max_variants=max_variants,
+            distribution_index=self.handle_head_distribution_index,
+            fixed_handle_head_object=self.fixed_handle_head_object,
+            fixed_handle_scale=self.fixed_handle_scale,
+            fixed_head_scale=self.fixed_head_scale,
+            fixed_handle_density=self.fixed_handle_density,
+            fixed_head_density=self.fixed_head_density,
         )
         object_assets = [_variant_asset_cfg(variant, goal=False) for variant in self.object_variants]
         goal_assets = [_variant_asset_cfg(variant, goal=True) for variant in self.object_variants]
@@ -460,9 +474,9 @@ class SimToolRealDirectDebugEnvCfg(SimToolRealDirectEnvCfg):
         self.procedural_objects_per_distribution = 1
         self.max_object_variants = 6
         self.debug_visual_ground = True
-        self.dome_light_intensity = 400.0
-        self.dome_light_color = (0.24, 0.27, 0.30)
-        self.key_light_intensity = 2600.0
+        self.dome_light_intensity = 160.0
+        self.dome_light_color = (0.18, 0.20, 0.24)
+        self.key_light_intensity = 420.0
         super().__post_init__()
 
 
@@ -1011,7 +1025,14 @@ class SimToolRealDirectEnv(DirectRLEnv):
     def _reset_goal(self, env_ids: torch.Tensor, *, is_first_goal: bool) -> None:
         count = len(env_ids)
         goal_state = self.goal_object.data.default_root_state[env_ids].clone()
-        if (not is_first_goal) and self.cfg.goal_sampling_type == "delta":
+        if self.cfg.fixed_goal_pos is not None:
+            local_goal = torch.zeros((count, 13), dtype=torch.float32, device=self.device)
+            local_goal[:, :3] = torch.tensor(self.cfg.fixed_goal_pos, dtype=torch.float32, device=self.device)
+            if self.cfg.fixed_goal_quat is None:
+                local_goal[:, 3] = 1.0
+            else:
+                local_goal[:, 3:7] = torch.tensor(self.cfg.fixed_goal_quat, dtype=torch.float32, device=self.device)
+        elif (not is_first_goal) and self.cfg.goal_sampling_type == "delta":
             local_goal = self.goal_states[env_ids].clone()
             local_goal[:, :3] += (torch.rand((count, 3), device=self.device) * 2.0 - 1.0) * self.cfg.delta_goal_distance
             local_goal[:, :3] = torch.maximum(torch.minimum(local_goal[:, :3], self.target_volume_max), self.target_volume_min)
