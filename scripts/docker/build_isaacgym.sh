@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 IMAGE_NAME="${IMAGE_NAME:-simtoolreal-isaacgym:latest}"
 ISAACGYM_ROOT="${ISAACGYM_ROOT:-/home/waybaba/Downloads/isaacgym_install/isaacgym}"
