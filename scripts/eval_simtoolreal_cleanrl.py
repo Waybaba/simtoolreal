@@ -67,6 +67,7 @@ parser.add_argument("--gated_goal_sequence", action=argparse.BooleanOptionalActi
 parser.add_argument("--sequence_goal_hold_steps", type=int, default=None)
 parser.add_argument("--strict_success_requires_lift", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--eval_success_tolerance", type=float, default=None)
+parser.add_argument("--visual_success_tolerance", type=float, default=0.05)
 parser.add_argument("--force_consecutive_near_goal_steps", action=argparse.BooleanOptionalAction, default=None)
 EvalAppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True, enable_cameras=True)
@@ -575,8 +576,10 @@ def main() -> None:
         max_successes = torch.zeros(args_cli.num_envs, device=device)
         ever_lifted = torch.zeros(args_cli.num_envs, dtype=torch.bool, device=device)
         strict_success_ever = torch.zeros(args_cli.num_envs, dtype=torch.bool, device=device)
+        visual_success_ever = torch.zeros(args_cli.num_envs, dtype=torch.bool, device=device)
         lifted_frame_counts = torch.zeros(args_cli.num_envs, dtype=torch.long, device=device)
         strict_success_frame_counts = torch.zeros(args_cli.num_envs, dtype=torch.long, device=device)
+        visual_success_frame_counts = torch.zeros(args_cli.num_envs, dtype=torch.long, device=device)
         max_object_z = torch.full((args_cli.num_envs,), -float("inf"), dtype=torch.float32, device=device)
         sequence_positions = sequence_quats = None
         sequence_target_indices = sequence_completed_counts = sequence_reach_steps = sequence_hit_streak = None
@@ -602,6 +605,7 @@ def main() -> None:
             if args_cli.eval_success_tolerance is not None
             else float(env.unwrapped.cfg.success_tolerance * env.unwrapped.cfg.keypoint_scale)
         )
+        visual_success_tolerance = float(args_cli.visual_success_tolerance)
         render_env_trace: list[dict[str, Any]] = []
         policy_obs = env.unwrapped._get_observations()["policy"].to(device)
         with imageio.get_writer(str(video_path), fps=args_cli.fps, macro_block_size=1) as writer:
@@ -626,6 +630,9 @@ def main() -> None:
                     policy_obs = obs["policy"].to(device)
 
                     keypoint_dist = env.unwrapped.keypoints_max_dist_for_reward.detach()
+                    object_goal_pos_dist = torch.linalg.norm(
+                        env.unwrapped.object_pos - env.unwrapped.goal_pos, dim=-1
+                    ).detach()
                     ever_lifted |= env.unwrapped.lifted_object.detach()
                     max_object_z = torch.maximum(max_object_z, env.unwrapped.object_pos[:, 2].detach())
                     reached_current_goal = _strict_current_success(
@@ -633,9 +640,14 @@ def main() -> None:
                         eval_success_tolerance,
                         require_lifted=args_cli.strict_success_requires_lift,
                     )
+                    visual_success = keypoint_dist <= visual_success_tolerance
+                    if args_cli.strict_success_requires_lift:
+                        visual_success &= env.unwrapped.lifted_object.detach()
                     strict_success_ever |= reached_current_goal
+                    visual_success_ever |= visual_success
                     lifted_frame_counts += env.unwrapped.lifted_object.detach().long()
                     strict_success_frame_counts += reached_current_goal.long()
+                    visual_success_frame_counts += visual_success.long()
                     if args_cli.gated_goal_sequence:
                         assert sequence_target_indices is not None
                         assert sequence_completed_counts is not None
@@ -660,8 +672,10 @@ def main() -> None:
                             {
                                 "step": step,
                                 "strict_success": bool(reached_current_goal[render_env_id].item()),
+                                "visual_success": bool(visual_success[render_env_id].item()),
                                 "lifted": bool(env.unwrapped.lifted_object[render_env_id].item()),
                                 "keypoint_dist": float(keypoint_dist[render_env_id].item()),
+                                "object_goal_pos_dist": float(object_goal_pos_dist[render_env_id].item()),
                                 "target_index": int(sequence_target_indices[render_env_id].item())
                                 if sequence_target_indices is not None
                                 else None,
@@ -733,14 +747,21 @@ def main() -> None:
             "final_min_object_goal_pos_dist": float(final_object_goal_dist.min().item()),
             "max_successes_per_env": max_successes.detach().cpu().tolist(),
             "legacy_env_success_rate_any": float((max_successes > 0).float().mean().item()),
-            "success_rate_any": float(strict_success_ever.float().mean().item()),
+            "success_rate_any": float(visual_success_ever.float().mean().item()),
+            "train_tolerance_success_rate_any": float(strict_success_ever.float().mean().item()),
             "strict_success_rate_any": float(strict_success_ever.float().mean().item()),
+            "visual_success_rate_any": float(visual_success_ever.float().mean().item()),
             "strict_success_requires_lift": bool(args_cli.strict_success_requires_lift),
             "eval_success_tolerance": eval_success_tolerance,
+            "visual_success_tolerance": visual_success_tolerance,
             "strict_success_ever": strict_success_ever.detach().cpu().tolist(),
+            "visual_success_ever": visual_success_ever.detach().cpu().tolist(),
             "render_env_strict_success_ever": bool(strict_success_ever[render_env_id].item()),
+            "render_env_visual_success_ever": bool(visual_success_ever[render_env_id].item()),
             "strict_success_frame_rate_mean": float((strict_success_frame_counts.float() / args_cli.steps).mean().item()),
             "render_env_strict_success_frame_rate": float(strict_success_frame_counts[render_env_id].float().item() / args_cli.steps),
+            "visual_success_frame_rate_mean": float((visual_success_frame_counts.float() / args_cli.steps).mean().item()),
+            "render_env_visual_success_frame_rate": float(visual_success_frame_counts[render_env_id].float().item() / args_cli.steps),
             "lifted_frame_rate_mean": float((lifted_frame_counts.float() / args_cli.steps).mean().item()),
             "render_env_lifted_frame_rate": float(lifted_frame_counts[render_env_id].float().item() / args_cli.steps),
             "render_env_trace": render_env_trace,
@@ -757,12 +778,15 @@ def main() -> None:
         print(f"[EVAL] stats={stats_path}", flush=True)
         print(
             "[EVAL] "
-            f"success_rate_any={stats['success_rate_any']:.4f} "
+            f"visual_success_rate_any={stats['visual_success_rate_any']:.4f} "
+            f"train_tol_success_rate_any={stats['train_tolerance_success_rate_any']:.4f} "
             f"legacy_env_success_rate_any={stats['legacy_env_success_rate_any']:.4f} "
             f"sequence_completion_rate={stats.get('sequence_completion_rate', 0.0):.4f} "
             f"render_env_completed_targets={stats.get('render_env_completed_target_count', 0)} "
+            f"render_env_visual_success={stats['render_env_visual_success_ever']} "
+            f"render_env_visual_frame_rate={stats['render_env_visual_success_frame_rate']:.4f} "
             f"render_env_strict_success={stats['render_env_strict_success_ever']} "
-            f"render_env_success_frame_rate={stats['render_env_strict_success_frame_rate']:.4f} "
+            f"render_env_train_tol_frame_rate={stats['render_env_strict_success_frame_rate']:.4f} "
             f"render_env_lifted_frame_rate={stats['render_env_lifted_frame_rate']:.4f} "
             f"render_env_lifted={stats['render_env_ever_lifted']} "
             f"best_render_env_keypoint_dist={best_dist:.4f} "
