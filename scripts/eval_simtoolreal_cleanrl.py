@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import sys
@@ -68,6 +69,7 @@ parser.add_argument("--sequence_goal_hold_steps", type=int, default=None)
 parser.add_argument("--strict_success_requires_lift", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--eval_success_tolerance", type=float, default=None)
 parser.add_argument("--visual_success_tolerance", type=float, default=0.05)
+parser.add_argument("--diagnostic_tolerances", type=float, nargs="*", default=(0.03, 0.05, 0.07))
 parser.add_argument("--force_consecutive_near_goal_steps", action=argparse.BooleanOptionalAction, default=None)
 EvalAppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True, enable_cameras=True)
@@ -506,6 +508,8 @@ def main() -> None:
     final_image_path = output_dir / "final_frame.png"
     best_image_path = output_dir / "best_frame.png"
     stats_path = output_dir / "eval_stats.json"
+    render_trace_csv_path = output_dir / "render_env_trace.csv"
+    env_summary_csv_path = output_dir / "env_summary.csv"
 
     env_cfg = parse_env_cfg(
         args_cli.task,
@@ -581,6 +585,10 @@ def main() -> None:
         strict_success_frame_counts = torch.zeros(args_cli.num_envs, dtype=torch.long, device=device)
         visual_success_frame_counts = torch.zeros(args_cli.num_envs, dtype=torch.long, device=device)
         max_object_z = torch.full((args_cli.num_envs,), -float("inf"), dtype=torch.float32, device=device)
+        min_keypoint_dist_per_env = torch.full((args_cli.num_envs,), float("inf"), dtype=torch.float32, device=device)
+        min_object_goal_pos_dist_per_env = torch.full(
+            (args_cli.num_envs,), float("inf"), dtype=torch.float32, device=device
+        )
         sequence_positions = sequence_quats = None
         sequence_target_indices = sequence_completed_counts = sequence_reach_steps = sequence_hit_streak = None
         sequence_events: list[dict[str, Any]] = []
@@ -600,12 +608,33 @@ def main() -> None:
             _apply_gated_goal_sequence(env, sequence_positions, sequence_quats, sequence_target_indices)
         else:
             trajectory_metadata = _apply_goal_trajectory(env, args_cli, 0, device)
+        reward_success_tolerance = float(env.unwrapped.cfg.success_tolerance * env.unwrapped.cfg.keypoint_scale)
         eval_success_tolerance = (
             float(args_cli.eval_success_tolerance)
             if args_cli.eval_success_tolerance is not None
-            else float(env.unwrapped.cfg.success_tolerance * env.unwrapped.cfg.keypoint_scale)
+            else reward_success_tolerance
         )
         visual_success_tolerance = float(args_cli.visual_success_tolerance)
+        diagnostic_tolerances = sorted(
+            {
+                round(float(tolerance), 6)
+                for tolerance in [
+                    *args_cli.diagnostic_tolerances,
+                    visual_success_tolerance,
+                    eval_success_tolerance,
+                    reward_success_tolerance,
+                ]
+            }
+        )
+        diagnostic_tolerance_tensor = torch.tensor(diagnostic_tolerances, dtype=torch.float32, device=device)
+        diagnostic_near_ever = torch.zeros(
+            (len(diagnostic_tolerances), args_cli.num_envs), dtype=torch.bool, device=device
+        )
+        diagnostic_success_ever = torch.zeros_like(diagnostic_near_ever)
+        diagnostic_near_frame_counts = torch.zeros(
+            (len(diagnostic_tolerances), args_cli.num_envs), dtype=torch.long, device=device
+        )
+        diagnostic_success_frame_counts = torch.zeros_like(diagnostic_near_frame_counts)
         render_env_trace: list[dict[str, Any]] = []
         policy_obs = env.unwrapped._get_observations()["policy"].to(device)
         with imageio.get_writer(str(video_path), fps=args_cli.fps, macro_block_size=1) as writer:
@@ -633,19 +662,35 @@ def main() -> None:
                     object_goal_pos_dist = torch.linalg.norm(
                         env.unwrapped.object_pos - env.unwrapped.goal_pos, dim=-1
                     ).detach()
+                    lifted_object = env.unwrapped.lifted_object.detach()
                     ever_lifted |= env.unwrapped.lifted_object.detach()
                     max_object_z = torch.maximum(max_object_z, env.unwrapped.object_pos[:, 2].detach())
+                    min_keypoint_dist_per_env = torch.minimum(min_keypoint_dist_per_env, keypoint_dist)
+                    min_object_goal_pos_dist_per_env = torch.minimum(
+                        min_object_goal_pos_dist_per_env, object_goal_pos_dist
+                    )
                     reached_current_goal = _strict_current_success(
                         env,
                         eval_success_tolerance,
                         require_lifted=args_cli.strict_success_requires_lift,
                     )
+                    reward_success = keypoint_dist <= reward_success_tolerance
+                    if args_cli.strict_success_requires_lift:
+                        reward_success &= lifted_object
                     visual_success = keypoint_dist <= visual_success_tolerance
                     if args_cli.strict_success_requires_lift:
-                        visual_success &= env.unwrapped.lifted_object.detach()
+                        visual_success &= lifted_object
+                    near_by_tolerance = keypoint_dist.unsqueeze(0) <= diagnostic_tolerance_tensor.unsqueeze(1)
+                    success_by_tolerance = near_by_tolerance
+                    if args_cli.strict_success_requires_lift:
+                        success_by_tolerance &= lifted_object.unsqueeze(0)
+                    diagnostic_near_ever |= near_by_tolerance
+                    diagnostic_success_ever |= success_by_tolerance
+                    diagnostic_near_frame_counts += near_by_tolerance.long()
+                    diagnostic_success_frame_counts += success_by_tolerance.long()
                     strict_success_ever |= reached_current_goal
                     visual_success_ever |= visual_success
-                    lifted_frame_counts += env.unwrapped.lifted_object.detach().long()
+                    lifted_frame_counts += lifted_object.long()
                     strict_success_frame_counts += reached_current_goal.long()
                     visual_success_frame_counts += visual_success.long()
                     if args_cli.gated_goal_sequence:
@@ -671,9 +716,11 @@ def main() -> None:
                         render_env_trace.append(
                             {
                                 "step": step,
+                                "gate_success": bool(reached_current_goal[render_env_id].item()),
                                 "strict_success": bool(reached_current_goal[render_env_id].item()),
+                                "reward_success": bool(reward_success[render_env_id].item()),
                                 "visual_success": bool(visual_success[render_env_id].item()),
-                                "lifted": bool(env.unwrapped.lifted_object[render_env_id].item()),
+                                "lifted": bool(lifted_object[render_env_id].item()),
                                 "keypoint_dist": float(keypoint_dist[render_env_id].item()),
                                 "object_goal_pos_dist": float(object_goal_pos_dist[render_env_id].item()),
                                 "target_index": int(sequence_target_indices[render_env_id].item())
@@ -725,6 +772,51 @@ def main() -> None:
             }
         else:
             sequence_stats = {"gated_goal_sequence": False}
+        visual_idx = diagnostic_tolerances.index(round(visual_success_tolerance, 6))
+        reward_idx = diagnostic_tolerances.index(round(reward_success_tolerance, 6))
+        gate_idx = diagnostic_tolerances.index(round(eval_success_tolerance, 6))
+        diagnostic_threshold_stats = []
+        for idx, tolerance in enumerate(diagnostic_tolerances):
+            near_counts = diagnostic_near_frame_counts[idx].float()
+            success_counts = diagnostic_success_frame_counts[idx].float()
+            diagnostic_threshold_stats.append(
+                {
+                    "tolerance": float(tolerance),
+                    "near_rate_any": float(diagnostic_near_ever[idx].float().mean().item()),
+                    "success_rate_any": float(diagnostic_success_ever[idx].float().mean().item()),
+                    "near_frame_rate_mean": float((near_counts / args_cli.steps).mean().item()),
+                    "success_frame_rate_mean": float((success_counts / args_cli.steps).mean().item()),
+                    "render_env_near_frame_rate": float(near_counts[render_env_id].item() / args_cli.steps),
+                    "render_env_success_frame_rate": float(success_counts[render_env_id].item() / args_cli.steps),
+                    "render_env_near_ever": bool(diagnostic_near_ever[idx, render_env_id].item()),
+                    "render_env_success_ever": bool(diagnostic_success_ever[idx, render_env_id].item()),
+                }
+            )
+        min_dist_quantiles = torch.quantile(
+            min_keypoint_dist_per_env,
+            torch.tensor([0.0, 0.25, 0.5, 0.75, 1.0], dtype=torch.float32, device=device),
+        )
+        env_summary_rows = []
+        for env_id in range(args_cli.num_envs):
+            row: dict[str, Any] = {
+                "env_id": env_id,
+                "min_keypoint_dist": float(min_keypoint_dist_per_env[env_id].item()),
+                "min_object_goal_pos_dist": float(min_object_goal_pos_dist_per_env[env_id].item()),
+                "max_object_z": float(max_object_z[env_id].item()),
+                "lifted_frame_rate": float(lifted_frame_counts[env_id].float().item() / args_cli.steps),
+                "legacy_success_count": float(max_successes[env_id].item()),
+            }
+            for idx, tolerance in enumerate(diagnostic_tolerances):
+                suffix = f"{tolerance:.6f}".rstrip("0").rstrip(".").replace(".", "p")
+                row[f"success_any_tol_{suffix}"] = bool(diagnostic_success_ever[idx, env_id].item())
+                row[f"success_frame_rate_tol_{suffix}"] = float(
+                    diagnostic_success_frame_counts[idx, env_id].float().item() / args_cli.steps
+                )
+                row[f"near_any_tol_{suffix}"] = bool(diagnostic_near_ever[idx, env_id].item())
+                row[f"near_frame_rate_tol_{suffix}"] = float(
+                    diagnostic_near_frame_counts[idx, env_id].float().item() / args_cli.steps
+                )
+            env_summary_rows.append(row)
         stats = {
             "checkpoint": str(args_cli.checkpoint),
             "checkpoint_update": int(checkpoint.get("update", 0)),
@@ -737,9 +829,18 @@ def main() -> None:
             "video_path": str(video_path),
             "final_image_path": str(final_image_path),
             "best_image_path": str(best_image_path),
+            "render_trace_csv_path": str(render_trace_csv_path),
+            "env_summary_csv_path": str(env_summary_csv_path),
             "best_render_env_keypoint_dist": best_dist,
             "best_all_env_keypoint_dist": best_all_env_dist,
             "best_all_env_id": best_all_env_id,
+            "min_keypoint_dist_quantiles": {
+                "min": float(min_dist_quantiles[0].item()),
+                "p25": float(min_dist_quantiles[1].item()),
+                "median": float(min_dist_quantiles[2].item()),
+                "p75": float(min_dist_quantiles[3].item()),
+                "max": float(min_dist_quantiles[4].item()),
+            },
             "final_mean_keypoint_dist": float(final_keypoint_dist.mean().item()),
             "final_min_keypoint_dist": float(final_keypoint_dist.min().item()),
             "final_render_env_keypoint_dist": float(final_keypoint_dist[render_env_id].item()),
@@ -748,20 +849,38 @@ def main() -> None:
             "max_successes_per_env": max_successes.detach().cpu().tolist(),
             "legacy_env_success_rate_any": float((max_successes > 0).float().mean().item()),
             "success_rate_any": float(visual_success_ever.float().mean().item()),
-            "train_tolerance_success_rate_any": float(strict_success_ever.float().mean().item()),
+            "reward_tolerance_success_rate_any": float(diagnostic_success_ever[reward_idx].float().mean().item()),
+            "train_tolerance_success_rate_any": float(diagnostic_success_ever[reward_idx].float().mean().item()),
+            "gate_success_rate_any": float(strict_success_ever.float().mean().item()),
             "strict_success_rate_any": float(strict_success_ever.float().mean().item()),
             "visual_success_rate_any": float(visual_success_ever.float().mean().item()),
             "strict_success_requires_lift": bool(args_cli.strict_success_requires_lift),
             "eval_success_tolerance": eval_success_tolerance,
+            "gate_success_tolerance": eval_success_tolerance,
+            "reward_success_tolerance": reward_success_tolerance,
             "visual_success_tolerance": visual_success_tolerance,
+            "diagnostic_thresholds": diagnostic_threshold_stats,
             "strict_success_ever": strict_success_ever.detach().cpu().tolist(),
             "visual_success_ever": visual_success_ever.detach().cpu().tolist(),
             "render_env_strict_success_ever": bool(strict_success_ever[render_env_id].item()),
             "render_env_visual_success_ever": bool(visual_success_ever[render_env_id].item()),
+            "render_env_reward_tolerance_success_ever": bool(diagnostic_success_ever[reward_idx, render_env_id].item()),
             "strict_success_frame_rate_mean": float((strict_success_frame_counts.float() / args_cli.steps).mean().item()),
             "render_env_strict_success_frame_rate": float(strict_success_frame_counts[render_env_id].float().item() / args_cli.steps),
             "visual_success_frame_rate_mean": float((visual_success_frame_counts.float() / args_cli.steps).mean().item()),
             "render_env_visual_success_frame_rate": float(visual_success_frame_counts[render_env_id].float().item() / args_cli.steps),
+            "reward_tolerance_success_frame_rate_mean": float(
+                (diagnostic_success_frame_counts[reward_idx].float() / args_cli.steps).mean().item()
+            ),
+            "render_env_reward_tolerance_success_frame_rate": float(
+                diagnostic_success_frame_counts[reward_idx, render_env_id].float().item() / args_cli.steps
+            ),
+            "gate_success_frame_rate_mean": float(
+                (diagnostic_success_frame_counts[gate_idx].float() / args_cli.steps).mean().item()
+            ),
+            "render_env_gate_success_frame_rate": float(
+                diagnostic_success_frame_counts[gate_idx, render_env_id].float().item() / args_cli.steps
+            ),
             "lifted_frame_rate_mean": float((lifted_frame_counts.float() / args_cli.steps).mean().item()),
             "render_env_lifted_frame_rate": float(lifted_frame_counts[render_env_id].float().item() / args_cli.steps),
             "render_env_trace": render_env_trace,
@@ -772,21 +891,34 @@ def main() -> None:
             **sequence_stats,
         }
         stats_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+        if render_env_trace:
+            with render_trace_csv_path.open("w", newline="", encoding="utf-8") as trace_file:
+                writer = csv.DictWriter(trace_file, fieldnames=list(render_env_trace[0].keys()))
+                writer.writeheader()
+                writer.writerows(render_env_trace)
+        if env_summary_rows:
+            with env_summary_csv_path.open("w", newline="", encoding="utf-8") as summary_file:
+                writer = csv.DictWriter(summary_file, fieldnames=list(env_summary_rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(env_summary_rows)
         print(f"[EVAL] video={video_path}", flush=True)
         print(f"[EVAL] final_image={final_image_path}", flush=True)
         print(f"[EVAL] best_image={best_image_path}", flush=True)
         print(f"[EVAL] stats={stats_path}", flush=True)
+        print(f"[EVAL] render_trace_csv={render_trace_csv_path}", flush=True)
+        print(f"[EVAL] env_summary_csv={env_summary_csv_path}", flush=True)
         print(
             "[EVAL] "
             f"visual_success_rate_any={stats['visual_success_rate_any']:.4f} "
-            f"train_tol_success_rate_any={stats['train_tolerance_success_rate_any']:.4f} "
+            f"reward_tol_success_rate_any={stats['reward_tolerance_success_rate_any']:.4f} "
+            f"gate_success_rate_any={stats['gate_success_rate_any']:.4f} "
             f"legacy_env_success_rate_any={stats['legacy_env_success_rate_any']:.4f} "
             f"sequence_completion_rate={stats.get('sequence_completion_rate', 0.0):.4f} "
             f"render_env_completed_targets={stats.get('render_env_completed_target_count', 0)} "
             f"render_env_visual_success={stats['render_env_visual_success_ever']} "
             f"render_env_visual_frame_rate={stats['render_env_visual_success_frame_rate']:.4f} "
-            f"render_env_strict_success={stats['render_env_strict_success_ever']} "
-            f"render_env_train_tol_frame_rate={stats['render_env_strict_success_frame_rate']:.4f} "
+            f"render_env_reward_tol_frame_rate={stats['render_env_reward_tolerance_success_frame_rate']:.4f} "
+            f"render_env_gate_frame_rate={stats['render_env_gate_success_frame_rate']:.4f} "
             f"render_env_lifted_frame_rate={stats['render_env_lifted_frame_rate']:.4f} "
             f"render_env_lifted={stats['render_env_ever_lifted']} "
             f"best_render_env_keypoint_dist={best_dist:.4f} "
