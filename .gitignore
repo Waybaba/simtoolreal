@@ -224,3 +224,6 @@ nohup.out
 # FoundationPose (separate repo)
 FoundationPose/
 paseo.json
+
+# Local research/status canvas. This is a personal browser workspace, not repo code.
+/src/website/

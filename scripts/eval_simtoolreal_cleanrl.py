@@ -50,12 +50,19 @@ parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, de
 parser.add_argument("--render_env_id", type=int, default=-1)
 parser.add_argument("--fps", type=int, default=30)
 parser.add_argument("--output_dir", type=Path, default=REPO_ROOT / "outputs" / "isaaclab_eval")
+parser.add_argument("--output_name", type=str, default=None)
 parser.add_argument("--disable_fabric", action="store_true")
 parser.add_argument("--env_device", type=str, default=None)
 parser.add_argument("--kit_active_gpu", type=int, default=None)
 parser.add_argument("--kit_physics_gpu", type=int, default=None)
 parser.add_argument("--simple_hammer_debug", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--easy_goal_debug", action=argparse.BooleanOptionalAction, default=False)
+parser.add_argument("--goal_trajectory", choices=("fixed", "line", "circle", "arc", "strike"), default="fixed")
+parser.add_argument("--goal_center", type=float, nargs=3, default=(0.0, 0.0, 0.78))
+parser.add_argument("--goal_amplitude", type=float, default=0.10)
+parser.add_argument("--goal_height_amplitude", type=float, default=0.06)
+parser.add_argument("--goal_period", type=int, default=240)
+parser.add_argument("--goal_pitch_amplitude_degrees", type=float, default=55.0)
 EvalAppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True, enable_cameras=True)
 args_cli = parser.parse_args()
@@ -76,6 +83,7 @@ from torch.distributions.normal import Normal  # noqa: E402
 
 import isaaclab_tasks  # noqa: F401, E402
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
+from isaaclab.utils.math import quat_from_angle_axis  # noqa: E402
 
 import isaaclab_env.tasks  # noqa: F401, E402
 
@@ -297,6 +305,61 @@ def _set_camera(env, env_id: int) -> None:
     )
 
 
+def _goal_pose_for_step(args: argparse.Namespace, step: int, num_envs: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    center = torch.tensor(args.goal_center, dtype=torch.float32, device=device).reshape(1, 3).repeat(num_envs, 1)
+    period = max(1, int(args.goal_period))
+    phase = 2.0 * math.pi * ((step % period) / period)
+    pos = center.clone()
+    pitch = 0.0
+
+    if args.goal_trajectory == "line":
+        pos[:, 0] += args.goal_amplitude * math.sin(phase)
+    elif args.goal_trajectory == "circle":
+        pos[:, 0] += args.goal_amplitude * math.cos(phase)
+        pos[:, 1] += args.goal_amplitude * math.sin(phase)
+    elif args.goal_trajectory == "arc":
+        pos[:, 0] += args.goal_amplitude * math.cos(phase)
+        pos[:, 2] += args.goal_height_amplitude * max(0.0, math.sin(phase))
+        pitch = math.radians(args.goal_pitch_amplitude_degrees) * math.sin(phase)
+    elif args.goal_trajectory == "strike":
+        stroke = (step % period) / period
+        pos[:, 0] += -args.goal_amplitude + 2.0 * args.goal_amplitude * stroke
+        pos[:, 2] += args.goal_height_amplitude * math.sin(math.pi * stroke)
+        pitch = math.radians(args.goal_pitch_amplitude_degrees) * (1.0 - 2.0 * stroke)
+
+    angle = torch.full((num_envs,), float(pitch), dtype=torch.float32, device=device)
+    axis = torch.tensor((0.0, 1.0, 0.0), dtype=torch.float32, device=device).repeat(num_envs, 1)
+    quat = quat_from_angle_axis(angle, axis)
+    return pos, quat
+
+
+def _write_goal_pose(env, local_pos: torch.Tensor, local_quat: torch.Tensor) -> None:
+    unwrapped = env.unwrapped
+    env_ids = torch.arange(unwrapped.num_envs, dtype=torch.long, device=unwrapped.device)
+    goal_state = unwrapped.goal_object.data.root_state_w.clone()
+    goal_state[:, :3] = local_pos + unwrapped.scene.env_origins
+    goal_state[:, 3:7] = local_quat
+    goal_state[:, 7:13] = 0.0
+    unwrapped.goal_object.write_root_state_to_sim(goal_state, env_ids=env_ids)
+    unwrapped.goal_states[:, :3] = local_pos
+    unwrapped.goal_states[:, 3:7] = local_quat
+    unwrapped.goal_states[:, 7:13] = 0.0
+    unwrapped.reset_goal_buf[:] = False
+
+
+def _apply_goal_trajectory(env, args: argparse.Namespace, step: int, device: torch.device) -> dict[str, Any]:
+    pos, quat = _goal_pose_for_step(args, step, env.unwrapped.num_envs, device)
+    _write_goal_pose(env, pos, quat)
+    return {
+        "mode": args.goal_trajectory,
+        "center": list(args.goal_center),
+        "amplitude": float(args.goal_amplitude),
+        "height_amplitude": float(args.goal_height_amplitude),
+        "period": int(args.goal_period),
+        "pitch_amplitude_degrees": float(args.goal_pitch_amplitude_degrees),
+    }
+
+
 def _capture_frame(env) -> np.ndarray:
     for _ in range(2):
         env.unwrapped.sim.render()
@@ -313,7 +376,10 @@ def main() -> None:
     torch.manual_seed(args_cli.seed)
     np.random.seed(args_cli.seed)
 
-    output_dir = args_cli.output_dir / args_cli.checkpoint.parent.parent.name
+    output_name = args_cli.output_name or (
+        f"{args_cli.checkpoint.parent.parent.name}_{args_cli.checkpoint.stem}_{args_cli.goal_trajectory}_seed{args_cli.seed}"
+    )
+    output_dir = args_cli.output_dir / output_name
     output_dir.mkdir(parents=True, exist_ok=True)
     video_path = output_dir / "eval_rollout.mp4"
     final_image_path = output_dir / "final_frame.png"
@@ -383,9 +449,13 @@ def main() -> None:
         best_frame = None
         final_frame = None
         max_successes = torch.zeros(args_cli.num_envs, device=device)
+        trajectory_metadata = _apply_goal_trajectory(env, args_cli, 0, device)
+        policy_obs = env.unwrapped._get_observations()["policy"].to(device)
         with imageio.get_writer(str(video_path), fps=args_cli.fps, macro_block_size=1) as writer:
             with torch.inference_mode():
                 for step in range(args_cli.steps):
+                    trajectory_metadata = _apply_goal_trajectory(env, args_cli, step, device)
+                    policy_obs = env.unwrapped._get_observations()["policy"].to(device)
                     norm_policy = obs_rms.normalize(policy_obs) if obs_rms is not None else policy_obs
                     norm_policy = _append_coef(norm_policy, env_coef)
                     mu, sigma, actor_state = agent.actor.forward_step(norm_policy, actor_state, next_done)
@@ -422,6 +492,7 @@ def main() -> None:
             "checkpoint": str(args_cli.checkpoint),
             "checkpoint_update": int(checkpoint.get("update", 0)),
             "checkpoint_global_step": int(checkpoint.get("global_step", 0)),
+            "goal_trajectory": trajectory_metadata,
             "num_envs": args_cli.num_envs,
             "steps": args_cli.steps,
             "deterministic": args_cli.deterministic,
