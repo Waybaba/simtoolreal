@@ -63,6 +63,8 @@ parser.add_argument("--goal_amplitude", type=float, default=0.10)
 parser.add_argument("--goal_height_amplitude", type=float, default=0.06)
 parser.add_argument("--goal_period", type=int, default=240)
 parser.add_argument("--goal_pitch_amplitude_degrees", type=float, default=55.0)
+parser.add_argument("--gated_goal_sequence", action=argparse.BooleanOptionalAction, default=False)
+parser.add_argument("--sequence_goal_hold_steps", type=int, default=None)
 EvalAppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True, enable_cameras=True)
 args_cli = parser.parse_args()
@@ -333,6 +335,64 @@ def _goal_pose_for_step(args: argparse.Namespace, step: int, num_envs: int, devi
     return pos, quat
 
 
+def _goal_sequence_for_args(args: argparse.Namespace, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+    center = torch.tensor(args.goal_center, dtype=torch.float32, device=device)
+    amplitude = float(args.goal_amplitude)
+    height = float(args.goal_height_amplitude)
+    pitch_scale = math.radians(float(args.goal_pitch_amplitude_degrees))
+    points: list[tuple[float, float, float]] = []
+    pitches: list[float] = []
+
+    if args.goal_trajectory == "line":
+        for alpha in (-1.0, -0.5, 0.0, 0.5, 1.0):
+            points.append((alpha * amplitude, 0.0, 0.0))
+            pitches.append(0.0)
+    elif args.goal_trajectory == "circle":
+        for angle in (0.0, 0.5 * math.pi, math.pi, 1.5 * math.pi):
+            points.append((amplitude * math.cos(angle), amplitude * math.sin(angle), 0.0))
+            pitches.append(0.0)
+    elif args.goal_trajectory == "arc":
+        for alpha in (-1.0, -0.33, 0.33, 1.0):
+            z = height * max(0.0, 1.0 - abs(alpha))
+            points.append((alpha * amplitude, 0.0, z))
+            pitches.append(-alpha * pitch_scale)
+    elif args.goal_trajectory == "strike":
+        for alpha, z, pitch in (
+            (-1.0, 0.0, 1.0),
+            (-0.35, height, 0.45),
+            (0.35, 0.55 * height, -0.35),
+            (1.0, 0.0, -1.0),
+        ):
+            points.append((alpha * amplitude, 0.0, z))
+            pitches.append(pitch * pitch_scale)
+    else:
+        points.append((0.0, 0.0, 0.0))
+        pitches.append(0.0)
+
+    offsets = torch.tensor(points, dtype=torch.float32, device=device)
+    positions = center.reshape(1, 3) + offsets
+    angles = torch.tensor(pitches, dtype=torch.float32, device=device)
+    axes = torch.tensor((0.0, 1.0, 0.0), dtype=torch.float32, device=device).repeat(len(pitches), 1)
+    quats = quat_from_angle_axis(angles, axes)
+    metadata = {
+        "mode": args.goal_trajectory,
+        "gated": True,
+        "center": list(args.goal_center),
+        "amplitude": amplitude,
+        "height_amplitude": height,
+        "pitch_amplitude_degrees": float(args.goal_pitch_amplitude_degrees),
+        "target_count": int(positions.shape[0]),
+        "targets": [
+            {
+                "pos": positions[index].detach().cpu().tolist(),
+                "quat": quats[index].detach().cpu().tolist(),
+            }
+            for index in range(positions.shape[0])
+        ],
+    }
+    return positions, quats, metadata
+
+
 def _write_goal_pose(env, local_pos: torch.Tensor, local_quat: torch.Tensor) -> None:
     unwrapped = env.unwrapped
     env_ids = torch.arange(unwrapped.num_envs, dtype=torch.long, device=unwrapped.device)
@@ -358,6 +418,50 @@ def _apply_goal_trajectory(env, args: argparse.Namespace, step: int, device: tor
         "period": int(args.goal_period),
         "pitch_amplitude_degrees": float(args.goal_pitch_amplitude_degrees),
     }
+
+
+def _apply_gated_goal_sequence(
+    env,
+    sequence_positions: torch.Tensor,
+    sequence_quats: torch.Tensor,
+    target_indices: torch.Tensor,
+) -> None:
+    clamped_indices = torch.clamp(target_indices, max=sequence_positions.shape[0] - 1)
+    _write_goal_pose(env, sequence_positions[clamped_indices], sequence_quats[clamped_indices])
+
+
+def _advance_gated_goal_sequence(
+    env,
+    *,
+    step: int,
+    target_indices: torch.Tensor,
+    completed_counts: torch.Tensor,
+    reach_steps: torch.Tensor,
+    hold_steps: int,
+    sequence_len: int,
+) -> list[dict[str, Any]]:
+    unwrapped = env.unwrapped
+    active = target_indices < sequence_len
+    reached = active & (unwrapped.near_goal_steps >= hold_steps)
+    env_ids = reached.nonzero(as_tuple=False).flatten()
+    events: list[dict[str, Any]] = []
+    if env_ids.numel() == 0:
+        return events
+
+    reached_target_indices = target_indices[env_ids].clone()
+    completed_counts[env_ids] += 1
+    reach_steps[env_ids, reached_target_indices] = torch.where(
+        reach_steps[env_ids, reached_target_indices] < 0,
+        torch.full_like(reach_steps[env_ids, reached_target_indices], step),
+        reach_steps[env_ids, reached_target_indices],
+    )
+    target_indices[env_ids] = torch.clamp(target_indices[env_ids] + 1, max=sequence_len)
+    unwrapped.near_goal_steps[env_ids] = 0
+    unwrapped.reset_goal_buf[env_ids] = False
+
+    for env_id, target_id in zip(env_ids.detach().cpu().tolist(), reached_target_indices.detach().cpu().tolist()):
+        events.append({"step": step, "env_id": int(env_id), "target_id": int(target_id)})
+    return events
 
 
 def _capture_frame(env) -> np.ndarray:
@@ -449,12 +553,36 @@ def main() -> None:
         best_frame = None
         final_frame = None
         max_successes = torch.zeros(args_cli.num_envs, device=device)
-        trajectory_metadata = _apply_goal_trajectory(env, args_cli, 0, device)
+        ever_lifted = torch.zeros(args_cli.num_envs, dtype=torch.bool, device=device)
+        max_object_z = torch.full((args_cli.num_envs,), -float("inf"), dtype=torch.float32, device=device)
+        sequence_positions = sequence_quats = None
+        sequence_target_indices = sequence_completed_counts = sequence_reach_steps = None
+        sequence_events: list[dict[str, Any]] = []
+        sequence_len = 0
+        sequence_hold_steps = (
+            int(args_cli.sequence_goal_hold_steps)
+            if args_cli.sequence_goal_hold_steps is not None
+            else int(env.unwrapped.cfg.success_steps)
+        )
+        if args_cli.gated_goal_sequence:
+            sequence_positions, sequence_quats, trajectory_metadata = _goal_sequence_for_args(args_cli, device)
+            sequence_len = int(sequence_positions.shape[0])
+            sequence_target_indices = torch.zeros(args_cli.num_envs, dtype=torch.long, device=device)
+            sequence_completed_counts = torch.zeros(args_cli.num_envs, dtype=torch.long, device=device)
+            sequence_reach_steps = -torch.ones((args_cli.num_envs, sequence_len), dtype=torch.long, device=device)
+            _apply_gated_goal_sequence(env, sequence_positions, sequence_quats, sequence_target_indices)
+        else:
+            trajectory_metadata = _apply_goal_trajectory(env, args_cli, 0, device)
         policy_obs = env.unwrapped._get_observations()["policy"].to(device)
         with imageio.get_writer(str(video_path), fps=args_cli.fps, macro_block_size=1) as writer:
             with torch.inference_mode():
                 for step in range(args_cli.steps):
-                    trajectory_metadata = _apply_goal_trajectory(env, args_cli, step, device)
+                    if args_cli.gated_goal_sequence:
+                        assert sequence_positions is not None and sequence_quats is not None
+                        assert sequence_target_indices is not None
+                        _apply_gated_goal_sequence(env, sequence_positions, sequence_quats, sequence_target_indices)
+                    else:
+                        trajectory_metadata = _apply_goal_trajectory(env, args_cli, step, device)
                     policy_obs = env.unwrapped._get_observations()["policy"].to(device)
                     norm_policy = obs_rms.normalize(policy_obs) if obs_rms is not None else policy_obs
                     norm_policy = _append_coef(norm_policy, env_coef)
@@ -468,6 +596,23 @@ def main() -> None:
                     policy_obs = obs["policy"].to(device)
 
                     keypoint_dist = env.unwrapped.keypoints_max_dist_for_reward.detach()
+                    ever_lifted |= env.unwrapped.lifted_object.detach()
+                    max_object_z = torch.maximum(max_object_z, env.unwrapped.object_pos[:, 2].detach())
+                    if args_cli.gated_goal_sequence:
+                        assert sequence_target_indices is not None
+                        assert sequence_completed_counts is not None
+                        assert sequence_reach_steps is not None
+                        sequence_events.extend(
+                            _advance_gated_goal_sequence(
+                                env,
+                                step=step,
+                                target_indices=sequence_target_indices,
+                                completed_counts=sequence_completed_counts,
+                                reach_steps=sequence_reach_steps,
+                                hold_steps=sequence_hold_steps,
+                                sequence_len=sequence_len,
+                            )
+                        )
                     dist = float(keypoint_dist[render_env_id].item())
                     min_dist, min_env_id = torch.min(keypoint_dist, dim=0)
                     if float(min_dist.item()) < best_all_env_dist:
@@ -488,6 +633,28 @@ def main() -> None:
 
         final_keypoint_dist = env.unwrapped.keypoints_max_dist_for_reward.detach().cpu()
         final_object_goal_dist = torch.linalg.norm(env.unwrapped.object_pos - env.unwrapped.goal_pos, dim=-1).detach().cpu()
+        sequence_stats: dict[str, Any]
+        if args_cli.gated_goal_sequence:
+            assert sequence_completed_counts is not None
+            assert sequence_reach_steps is not None
+            sequence_complete = sequence_completed_counts >= sequence_len
+            best_sequence_env_id = int(torch.argmax(sequence_completed_counts).item())
+            sequence_stats = {
+                "gated_goal_sequence": True,
+                "sequence_target_count": sequence_len,
+                "sequence_goal_hold_steps": sequence_hold_steps,
+                "sequence_completion_rate": float(sequence_complete.float().mean().item()),
+                "completed_target_count_mean": float(sequence_completed_counts.float().mean().item()),
+                "completed_target_count_max": int(sequence_completed_counts.max().item()),
+                "best_sequence_env_id": best_sequence_env_id,
+                "render_env_completed_target_count": int(sequence_completed_counts[render_env_id].item()),
+                "render_env_sequence_complete": bool(sequence_complete[render_env_id].item()),
+                "sequence_completed_counts": sequence_completed_counts.detach().cpu().tolist(),
+                "sequence_reach_steps": sequence_reach_steps.detach().cpu().tolist(),
+                "sequence_events": sequence_events,
+            }
+        else:
+            sequence_stats = {"gated_goal_sequence": False}
         stats = {
             "checkpoint": str(args_cli.checkpoint),
             "checkpoint_update": int(checkpoint.get("update", 0)),
@@ -510,6 +677,11 @@ def main() -> None:
             "final_min_object_goal_pos_dist": float(final_object_goal_dist.min().item()),
             "max_successes_per_env": max_successes.detach().cpu().tolist(),
             "success_rate_any": float((max_successes > 0).float().mean().item()),
+            "ever_lifted_rate": float(ever_lifted.float().mean().item()),
+            "render_env_ever_lifted": bool(ever_lifted[render_env_id].item()),
+            "max_object_z_mean": float(max_object_z.mean().item()),
+            "render_env_max_object_z": float(max_object_z[render_env_id].item()),
+            **sequence_stats,
         }
         stats_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
         print(f"[EVAL] video={video_path}", flush=True)
@@ -519,6 +691,9 @@ def main() -> None:
         print(
             "[EVAL] "
             f"success_rate_any={stats['success_rate_any']:.4f} "
+            f"sequence_completion_rate={stats.get('sequence_completion_rate', 0.0):.4f} "
+            f"render_env_completed_targets={stats.get('render_env_completed_target_count', 0)} "
+            f"render_env_lifted={stats['render_env_ever_lifted']} "
             f"best_render_env_keypoint_dist={best_dist:.4f} "
             f"final_mean_keypoint_dist={stats['final_mean_keypoint_dist']:.4f}",
             flush=True,
