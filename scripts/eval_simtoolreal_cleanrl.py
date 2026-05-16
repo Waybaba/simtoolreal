@@ -58,7 +58,7 @@ parser.add_argument("--kit_active_gpu", type=int, default=None)
 parser.add_argument("--kit_physics_gpu", type=int, default=None)
 parser.add_argument("--simple_hammer_debug", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--easy_goal_debug", action=argparse.BooleanOptionalAction, default=False)
-parser.add_argument("--goal_trajectory", choices=("fixed", "line", "circle", "arc", "strike"), default="fixed")
+parser.add_argument("--goal_trajectory", choices=("native", "fixed", "line", "circle", "arc", "strike"), default="fixed")
 parser.add_argument("--goal_center", type=float, nargs=3, default=(0.0, 0.0, 0.78))
 parser.add_argument("--goal_amplitude", type=float, default=0.10)
 parser.add_argument("--goal_height_amplitude", type=float, default=0.06)
@@ -314,6 +314,8 @@ def _set_camera(env, env_id: int) -> None:
 
 
 def _goal_pose_for_step(args: argparse.Namespace, step: int, num_envs: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    if args.goal_trajectory == "native":
+        raise ValueError("native goal trajectory uses the environment's own goal reset logic")
     center = torch.tensor(args.goal_center, dtype=torch.float32, device=device).reshape(1, 3).repeat(num_envs, 1)
     period = max(1, int(args.goal_period))
     phase = 2.0 * math.pi * ((step % period) / period)
@@ -342,6 +344,8 @@ def _goal_pose_for_step(args: argparse.Namespace, step: int, num_envs: int, devi
 
 
 def _goal_sequence_for_args(args: argparse.Namespace, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+    if args.goal_trajectory == "native":
+        raise ValueError("native goal trajectory cannot be converted to a fixed gated sequence")
     center = torch.tensor(args.goal_center, dtype=torch.float32, device=device)
     amplitude = float(args.goal_amplitude)
     height = float(args.goal_height_amplitude)
@@ -445,6 +449,14 @@ def _strict_current_success(env, tolerance: float, *, require_lifted: bool) -> t
     return reached.detach()
 
 
+def _quat_angle_error_deg(quat_a: torch.Tensor, quat_b: torch.Tensor) -> torch.Tensor:
+    quat_a = quat_a / torch.clamp(torch.linalg.norm(quat_a, dim=-1, keepdim=True), min=1.0e-8)
+    quat_b = quat_b / torch.clamp(torch.linalg.norm(quat_b, dim=-1, keepdim=True), min=1.0e-8)
+    dot = torch.abs(torch.sum(quat_a * quat_b, dim=-1))
+    angle = 2.0 * torch.acos(torch.clamp(dot, max=1.0))
+    return torch.rad2deg(angle)
+
+
 def _advance_gated_goal_sequence(
     env,
     *,
@@ -493,6 +505,8 @@ def _capture_frame(env) -> np.ndarray:
 
 
 def main() -> None:
+    if args_cli.gated_goal_sequence and args_cli.goal_trajectory == "native":
+        raise ValueError("--gated_goal_sequence requires a scripted goal_trajectory, not native")
     env_device = args_cli.env_device or args_cli.device
     checkpoint = torch.load(args_cli.checkpoint, map_location="cpu", weights_only=False)
     ckpt_args = checkpoint.get("args", {})
@@ -589,10 +603,14 @@ def main() -> None:
         min_object_goal_pos_dist_per_env = torch.full(
             (args_cli.num_envs,), float("inf"), dtype=torch.float32, device=device
         )
+        min_quat_angle_error_per_env = torch.full(
+            (args_cli.num_envs,), float("inf"), dtype=torch.float32, device=device
+        )
         sequence_positions = sequence_quats = None
         sequence_target_indices = sequence_completed_counts = sequence_reach_steps = sequence_hit_streak = None
         sequence_events: list[dict[str, Any]] = []
         sequence_len = 0
+        manual_goal_control = args_cli.goal_trajectory != "native"
         sequence_hold_steps = (
             int(args_cli.sequence_goal_hold_steps)
             if args_cli.sequence_goal_hold_steps is not None
@@ -606,8 +624,18 @@ def main() -> None:
             sequence_reach_steps = -torch.ones((args_cli.num_envs, sequence_len), dtype=torch.long, device=device)
             sequence_hit_streak = torch.zeros(args_cli.num_envs, dtype=torch.long, device=device)
             _apply_gated_goal_sequence(env, sequence_positions, sequence_quats, sequence_target_indices)
-        else:
+        elif manual_goal_control:
             trajectory_metadata = _apply_goal_trajectory(env, args_cli, 0, device)
+        else:
+            trajectory_metadata = {
+                "mode": "native",
+                "gated": False,
+                "goal_sampling_type": env.unwrapped.cfg.goal_sampling_type,
+                "delta_goal_distance": float(env.unwrapped.cfg.delta_goal_distance),
+                "delta_rotation_degrees": float(env.unwrapped.cfg.delta_rotation_degrees),
+                "target_volume_min": env.unwrapped.target_volume_min.detach().cpu().tolist(),
+                "target_volume_max": env.unwrapped.target_volume_max.detach().cpu().tolist(),
+            }
         reward_success_tolerance = float(env.unwrapped.cfg.success_tolerance * env.unwrapped.cfg.keypoint_scale)
         eval_success_tolerance = (
             float(args_cli.eval_success_tolerance)
@@ -644,7 +672,7 @@ def main() -> None:
                         assert sequence_positions is not None and sequence_quats is not None
                         assert sequence_target_indices is not None
                         _apply_gated_goal_sequence(env, sequence_positions, sequence_quats, sequence_target_indices)
-                    else:
+                    elif manual_goal_control:
                         trajectory_metadata = _apply_goal_trajectory(env, args_cli, step, device)
                     policy_obs = env.unwrapped._get_observations()["policy"].to(device)
                     norm_policy = obs_rms.normalize(policy_obs) if obs_rms is not None else policy_obs
@@ -662,6 +690,7 @@ def main() -> None:
                     object_goal_pos_dist = torch.linalg.norm(
                         env.unwrapped.object_pos - env.unwrapped.goal_pos, dim=-1
                     ).detach()
+                    quat_angle_error = _quat_angle_error_deg(env.unwrapped.object_rot, env.unwrapped.goal_rot).detach()
                     lifted_object = env.unwrapped.lifted_object.detach()
                     ever_lifted |= env.unwrapped.lifted_object.detach()
                     max_object_z = torch.maximum(max_object_z, env.unwrapped.object_pos[:, 2].detach())
@@ -669,6 +698,7 @@ def main() -> None:
                     min_object_goal_pos_dist_per_env = torch.minimum(
                         min_object_goal_pos_dist_per_env, object_goal_pos_dist
                     )
+                    min_quat_angle_error_per_env = torch.minimum(min_quat_angle_error_per_env, quat_angle_error)
                     reached_current_goal = _strict_current_success(
                         env,
                         eval_success_tolerance,
@@ -711,7 +741,8 @@ def main() -> None:
                                 sequence_len=sequence_len,
                             )
                         )
-                    env.unwrapped.reset_goal_buf[:] = False
+                    if manual_goal_control:
+                        env.unwrapped.reset_goal_buf[:] = False
                     if len(render_env_trace) < args_cli.steps:
                         render_env_trace.append(
                             {
@@ -723,6 +754,9 @@ def main() -> None:
                                 "lifted": bool(lifted_object[render_env_id].item()),
                                 "keypoint_dist": float(keypoint_dist[render_env_id].item()),
                                 "object_goal_pos_dist": float(object_goal_pos_dist[render_env_id].item()),
+                                "quat_angle_error_deg": float(quat_angle_error[render_env_id].item()),
+                                "env_success_count": float(env.unwrapped.successes[render_env_id].item()),
+                                "near_goal_steps": int(env.unwrapped.near_goal_steps[render_env_id].item()),
                                 "target_index": int(sequence_target_indices[render_env_id].item())
                                 if sequence_target_indices is not None
                                 else None,
@@ -748,6 +782,7 @@ def main() -> None:
 
         final_keypoint_dist = env.unwrapped.keypoints_max_dist_for_reward.detach().cpu()
         final_object_goal_dist = torch.linalg.norm(env.unwrapped.object_pos - env.unwrapped.goal_pos, dim=-1).detach().cpu()
+        final_quat_angle_error = _quat_angle_error_deg(env.unwrapped.object_rot, env.unwrapped.goal_rot).detach().cpu()
         sequence_stats: dict[str, Any]
         if args_cli.gated_goal_sequence:
             assert sequence_completed_counts is not None
@@ -802,6 +837,7 @@ def main() -> None:
                 "env_id": env_id,
                 "min_keypoint_dist": float(min_keypoint_dist_per_env[env_id].item()),
                 "min_object_goal_pos_dist": float(min_object_goal_pos_dist_per_env[env_id].item()),
+                "min_quat_angle_error_deg": float(min_quat_angle_error_per_env[env_id].item()),
                 "max_object_z": float(max_object_z[env_id].item()),
                 "lifted_frame_rate": float(lifted_frame_counts[env_id].float().item() / args_cli.steps),
                 "legacy_success_count": float(max_successes[env_id].item()),
@@ -846,6 +882,9 @@ def main() -> None:
             "final_render_env_keypoint_dist": float(final_keypoint_dist[render_env_id].item()),
             "final_mean_object_goal_pos_dist": float(final_object_goal_dist.mean().item()),
             "final_min_object_goal_pos_dist": float(final_object_goal_dist.min().item()),
+            "final_mean_quat_angle_error_deg": float(final_quat_angle_error.mean().item()),
+            "final_min_quat_angle_error_deg": float(final_quat_angle_error.min().item()),
+            "final_render_env_quat_angle_error_deg": float(final_quat_angle_error[render_env_id].item()),
             "max_successes_per_env": max_successes.detach().cpu().tolist(),
             "legacy_env_success_rate_any": float((max_successes > 0).float().mean().item()),
             "success_rate_any": float(visual_success_ever.float().mean().item()),
