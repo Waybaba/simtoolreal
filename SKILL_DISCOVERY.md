@@ -1901,13 +1901,32 @@ Run：`gotoobject_blockwise_spread_replay_seed7_20260722_101916`
 
 ## Phase 5U：Frozen Final-policy Seed-block Audit
 
-状态：`evaluation-only计划已冻结，尚未运行`
+状态：`evaluation-only完成；5/5 held-out seed blocks通过`
 
 - 唯一输入是Phase 5T保存的final `q_table.npz`与`metrics.json`；不恢复training、不更新Q/visits、不改变matrix，也不挑选checkpoint。
 - 固定评估5个互不重叠的seed blocks，seeds为 `seed + 1,100,000 + block_index * 100,000`，`block_index=0..4`。每个block使用512 common layouts/skill，与原final的 `seed+900,000` 不重叠。
 - 每个block独立做best permutation assignment并报告far/adjacent/carried rates。Robustness gate要求5/5 blocks中三类都 `>=0.90`；同时报告每类mean、standard deviation和worst-block rate。
 - Saved-Q loader必须核对relation key shape、Q shape、finite values和无重复keys；审计输出保存到原run目录的 `final_policy_seed_block_audit.json`。
 - 该audit不替代Phase 5T失败的temporal checkpoint gate。若5/5通过，下一正式证据是用至少3个training seeds重跑integrated replay算法，并把未来last-3 checkpoints放在epsilon归零之后；若失败，先停止multi-seed扩张并定位layout coverage。
+
+### 5-block 结果
+
+Artifact：`gotoobject_blockwise_spread_replay_seed7_20260722_101916/final_policy_seed_block_audit.json`
+
+| Block seed | Far | Adjacent | Carried | Gate |
+| ---: | ---: | ---: | ---: | :---: |
+| 1,100,007 | 0.939 | 0.969 | 0.965 | pass |
+| 1,200,007 | 0.957 | 0.945 | 0.955 | pass |
+| 1,300,007 | 0.971 | 0.971 | 0.955 | pass |
+| 1,400,007 | 0.961 | 0.975 | 0.963 | pass |
+| 1,500,007 | 0.938 | 0.973 | 0.957 | pass |
+
+- 5/5 blocks全部通过，且每个block都保持相同assignment `[far, carried, adjacent]`。
+- Far/adjacent/carried均值为 `0.953/0.966/0.959`，standard deviation为 `0.0128/0.0107/0.0041`，worst block仍为 `0.938/0.945/0.955`。
+- Audit前后saved Q逐值不变；这只是frozen-policy robustness证据，不修改Phase 5T的formal fail标签。
+
+> [里程碑]
+> Bootstrap relabel replay已同时具备强independent-final和5组held-out layout证据。单seed继续调参的信息价值已很低；进入至少3个training seeds的integrated replication，并在运行前修正未来checkpoint schedule，使temporal last-3全部位于epsilon退火结束之后。
 
 ## Phase 6：迁移到 Hammer
 
