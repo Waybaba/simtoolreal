@@ -3,9 +3,9 @@
 > [当前状态]
 > 分支：`codex/skill-discovery`
 >
-> 当前阶段：DoorKey visual reward因exploration distribution shift而0/3失败；Taxi-v4 environment gate通过，但完整404-state domain上的frozen DINO reference upper bound也失败，Taxi visual reward未启动。
+> 当前阶段：小环境路线已完成到Taxi-v4 full-domain visual gate；DoorKey online visual reward为0/3，Taxi frozen DINO reference upper bound也失败。现转入Hammer离线迁移前的数据审计，不启动长PPO训练。
 >
-> 当前动作：连续两个public graphical benchmarks说明full-frame DINO current不能稳定表达object-interaction semantics。停止Taxi视觉路线；下一步应转向真正的object-centric或vision-language/reference-trained representation，而不是继续更换控制环境或把失败embedding接入reward。Hammer继续后移。
+> 当前动作：现有圆柄Hammer训练MP4与JSONL记录了不同env，历史评估trace又没有原始物体位移，因此都不能直接作为视觉语义真值。下一步只补录四条短的env0视频/状态严格同步轨迹，再做object-centric或vision-language离线metric gate；通过前不接reward。
 
 ## 一眼看完整流程
 
@@ -2632,7 +2632,7 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 
 ## Phase 6：迁移到 Hammer
 
-状态：`后续`
+状态：`数据审计完成；等待最小同步补录`
 
 只有小环境已经回答以下问题后才进入 Hammer：metric 有效、reward 可训练、object interaction 不会被绕过、视觉 embedding 可以缓存。
 
@@ -2649,6 +2649,42 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - drop / release
 
 注意：旧环境的 `successes` counter 曾经允许“接近目标但没有真正举起 hammer”的 false positive，因此它不能直接作为语义 ground truth。Hammer gate 必须使用 object motion、lift 条件与视频抽查。
+
+### Phase 6A：现有圆柄 Hammer 数据审计
+
+审计对象是圆柄主训练 run：
+
+`isaaclab_round_handle_zhold_finalz_robust_from_u1300_to_u2600_gpu3_20260529_221709`
+
+现有资产不是空的：该 run 有56个checkpoint、12个训练MP4和12个trajectory segment；前11段各有1,440条逐控制步JSONL，最后一段因训练结束有416条。每段manifest都保存robot、object、goal、action、policy observation和视频路径。仓库中另有288个名称含round-handle的评估目录，均有240/600帧MP4、`eval_stats.json`、`env_summary.csv`和逐步`render_env_trace.csv`。
+
+但正式审计发现两个不能忽略的配对问题：
+
+1. 主训练视频录制 `capture_video_env_id=0`，trajectory logger的 `first_line` 实际记录 `[380,361,342,323]`。视频和JSONL只共享训练时刻与checkpoint，不是同一机械臂轨迹；它们可以展示训练阶段，不能训练或评估pixel-to-state metric。
+2. 历史评估MP4与render trace逐帧、同env配对，但trace只保存布尔 `lifted` 和距离，没有保存逐帧 `object_pos/object_init_pos`。旧 `lifted_object` 是有记忆的阈值量，一旦触发会保持为真；因此“视频看起来没抓起，但success很高”的冲突不能靠旧字段裁决。
+
+结论：现有数据足以证明代码、checkpoint、相机和短评估都可用，但不足以构成无歧义的Hammer视觉语义ground truth。不得用训练MP4配错的JSONL，也不得把历史`successes/lifted`直接重命名为成功标签。
+
+### Phase 6B：最小同步补录预注册
+
+只补录四条短轨迹，不重新训练策略：
+
+- 使用现有圆柄checkpoint的早/中/晚阶段，各自运行一个短确定性rollout；第四条用于失败/低抬升对照。四张GPU各承担一条，运行环境使用`isaaclab510`，cache与输出保持在`/home/wang100/data`和仓库`outputs`，不向home写大型环境。
+- 视频固定录制env0，trajectory logger固定选择`first`且只记录env0；视频240帧，JSONL前240条必须有相同起始control step并逐步递增。任一条不满足即停止视觉metric。
+- 每次episode reset以该帧object pose为baseline。`object_rise = z_t - z_reset`，`object_xy_motion`和三维位移从原始pose计算；不使用累计`lifted_object`作为主标签。
+- 预注册语义stage：`rest/no-effect`、`moved-on-table`、`lifted-far`、`near-goal`。近目标还必须满足真实rise，不允许只因绿色goal ghost与静止hammer接近而判成功。
+- 每条先生成起始/中间/末尾和stage转折联系表，人工查看真实hammer、手和桌面都可见，且状态曲线与视频运动方向一致。只看非黑帧，渲染启动黑帧不进入metric。
+
+离线metric比较固定为三组：full-frame DINO负对照、object-centered visual crop、object-centered vision-language text-score。训练/校准与audit按checkpoint整条隔离，不随机拆同一视频帧，避免相邻帧泄漏。
+
+Primary gate：
+
+- audit macro recall至少0.70，`lifted-far`与`near-goal`各自recall至少0.60；
+- `rest/no-effect`误报为`near-goal`不超过10%；
+- object-centric/VLM至少比同split full-frame DINO macro recall高0.10；
+- stage score在真实抬升/接近目标前后呈正确方向，且人工联系表不出现“手移动、hammer未动却预测成功”的系统性错误。
+
+若四条短轨迹仍不能覆盖至少三个stage，只允许补录新的短rollout或改变已有checkpoint选择，不训练metric、不改gate。若metric失败，停止Hammer reward接入并记录失败；若通过，下一大计划才定义cached embedding reward和短控制实验。
 
 ## Phase 7：组合性与下游任务
 
