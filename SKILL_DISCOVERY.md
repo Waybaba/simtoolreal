@@ -2824,6 +2824,36 @@ Run：`outputs/skill_discovery/mountaincar_continuous/environment_audit_20260722
 > [里程碑]
 > MountainCarContinuous建立了一个低成本、公开、连续控制且RGB bitwise可复现的下一实验底座。任务可达与renderer确定性已经分开验证；下一步只研究balanced visual stage dataset与representation，不需要先训练机械臂或调用VLM估计长程距离。
 
+## Phase 5ZT：MountainCar Balanced RGB Position Metric
+
+状态：`预注册；未生成数据`
+
+### 研究问题与限制
+
+只回答：**从单张官方RGB能否稳定恢复car的水平位置关系，并区分四个position regions。** 当前帧不包含velocity或“曾经到过left”的历史，因此本阶段明确不预测momentum direction、不沿用Phase 5ZS的persistent ordered stage，也不声称学到了trajectory skill。
+
+四个互斥visual classes固定为`left_slope [-1.15,-0.75]`、`valley (-0.75,0)`、`right_slope [0,0.45)`、`goal_region [0.45,0.58]`。Goal region是position audit label，不等于native success；native success还需要非负velocity。
+
+### 数据与 Candidate
+
+- 使用官方renderer直接设置合法`[position, velocity]` state做representation sweep，不step physics。Reference/audit各按四类收集256张，共2,048张`400x600x3` RGB；positions由独立固定RNG在各区间内部采样，velocity均匀采样`[-0.07,0.07]`但只作审计，因为renderer不显示velocity。
+- Reference与audit positions不重复，frame hashes跨split交集必须为0；每split各类严格256，frame shape/dtype与Phase 5ZS一致。保存四类联系表并人工确认car位置与label一致。
+- `raw_rgb_1nn`：固定downsample到`30x20` grayscale，reference labels做1-NN。
+- `dinov2_1nn`：冻结`facebook/dinov2-small` CLS，reference labels做1-NN；不finetune、不crop。
+- 唯一object-centric candidate `median_background_car_x_1nn`：只用reference RGB逐像素median估计静态background；每帧与background的absolute difference按column求和，取weighted horizontal centroid作为一维feature，再用reference labels 1-NN。它不读取state、class boundary、car template或audit labels。
+
+### Gates
+
+- Data gate：2,048帧完整、四类严格平衡、split内frame hashes unique且跨split无交集；reference/audit position值不重复。
+- Localization sanity：candidate car-x feature与audit oracle position的Spearman correlation绝对值`>=0.99`，四类feature medians严格递增。
+- Semantic gate：candidate audit accuracy与macro recall均`>=0.98`，四类recall各`>=0.95`，四个predicted classes均非空。
+- Baselines只用于解释，不作为candidate通过条件。若DINO同样通过，结论是该简单2D position不需要额外object-centric结构；若candidate失败，不调median、difference threshold、resolution或class bins，停止该candidate。
+
+通过后下一大计划才研究frame-pair velocity sign与online position-skill control；未通过前不训练policy。
+
+> [大计划]
+> CPU先生成并审计2,048张RGB；data gate通过后只用一张空闲GPU批量编码DINO。日常编码只写一行log，完成/失败才写里程碑。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
