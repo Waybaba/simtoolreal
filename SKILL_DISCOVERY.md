@@ -3187,7 +3187,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/visual_tree_rollout_202607
 
 ## Phase 6B：Reference-only Visual State Calibration
 
-状态：`预注册；未训练`
+状态：`已完成；regression gate失败，未运行natural`
 
 Phase 6B继续冻结Phase 5ZZ五类data、splits、median background与`x_before/x_after` RGB centroids，但不直接学习离散class。Reference state只作为训练监督，把单帧visual x映射为physical position；部署与audit prediction只消费RGB-derived centroids，不读取state/action/termination。
 
@@ -3206,6 +3206,18 @@ Phase 6B继续冻结Phase 5ZZ五类data、splits、median background与`x_before
 
 > [大计划]
 > 先实现hash-aligned target loader、reference-only decoder和balanced audit。通过前不实现natural adapter；长命令按约300秒阻塞等待。
+
+### Phase 6B 结果：Global Polynomial Decoder 精度不足
+
+Run：`outputs/skill_discovery/mountaincar_continuous/visual_state_decoder_20260722_173733`
+
+- Pair-hash/label/split alignment通过；decoder只用1,280 reference pairs形成2,560个scalar rows，audit未参与fit。
+- Audit position MAE/p99为`0.00173/0.00477`，分别高于冻结`0.0015/0.0040`；next-velocity MAE/p99为`0.000853/0.00323`，高于`0.00075/0.0020`。Regression gate失败。
+- 作为诊断，decoded relation balanced accuracy/macro为`0.9852`，recalls为none `0.984`、left `0.980`、valley `1.000`、right `0.996`、goal `0.965`，classification gate单独通过。
+- Global cubic mapping仍受车辆姿态相关centroid偏移和左边界position clipping影响；连续误差不能因classification通过而隐藏。按预注册未实现/运行natural adapter，不调degree、alpha或gates。
+
+> [里程碑]
+> RGB centroid含有足够relation信息，但单个global polynomial不是满足连续精度门槛的state decoder。Phase 6B停止；下一候选若继续continuous route，必须换成预注册的monotonic local calibration并显式处理official left-boundary clipping，而不是调本次多项式。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3710,6 +3722,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：与Phase 5ZW完全相同的61,382 natural transitions；五类联系表人工通过。
 - 结果：none FPR 0.0105、none->goal 0、goal recall 1.0；left/valley/right recall 0.936/0.920/0.905，relation macro 0.9404未达0.95。
 - 决定：tree final gate失败，不接reward且不调model。下一候选改为reference-only视觉连续状态校准，再应用冻结关系阈值；natural labels仍只作最终audit。
+
+### D-047：Global Cubic Visual State Decoder 未过连续误差门槛
+
+- 日期：2026-07-22
+- 证据：reference-only 2,560 scalar fit rows；hash alignment通过，balanced relation accuracy 0.9852。
+- 结果：position MAE/p99 0.00173/0.00477，velocity 0.000853/0.00323，四项均略高于预注册门槛。
+- 决定：regression gate失败即停止，不运行natural、不调degree/alpha。若继续，改用独立预注册的monotonic local calibration并处理official left-wall velocity reset。
 
 ## 实验日志
 
