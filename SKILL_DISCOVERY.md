@@ -2044,6 +2044,20 @@ Summary：`gotoobject_balanced_transition_replay_multiseed_7_17_29_20260722_1054
 > [里程碑]
 > GoToObject tabular搜索停止。最终可保留的方法结构是：online spread发现clusters、global balanced assignment、transition-predecessor reward floor、bootstrap frozen-reward relabel replay和独立final-block审计。它在3个training seeds上得到3/3 final pass与15/15 held-out blocks，但temporal snapshots仍有门槛附近波动。下一环境应增加阶段数与组合深度，而不是继续优化这个toy gate。
 
+## Phase 5Z：DoorKey 5x5 Tabular Compositional Control
+
+状态：`20k balanced-control diagnostic计划已冻结，尚未运行`
+
+- 回到公开 `MiniGrid-DoorKey-5x5-v0`，复用Phase 4A已通过的official dynamics、scripted solver和四个furthest stages：navigation/key/door/goal。不使用IsaacLab，也不修改MiniGrid grid生成。
+- 本地重新审计前10000 seeds只有48种initial grid+agent signatures，tabular layout-aware control可行。Compact state固定包含agent `(x,y,dir)`、key floor position或carried、door `(x,y,open,locked)`、goal position；不能隐藏layout。
+- 这是control upper bound，不声称unsupervised discovery。四个skills固定对应navigation/key/door/goal，training layouts采用common random numbers：同一个四skill cycle共享官方reset seed。
+- Actions只保留official left/right/forward/pickup/toggle；drop与done不属于完成DoorKey所需动作，在本阶段作为明确action abstraction移除。Horizon固定64，native task reward只进入evaluation info。
+- 使用furthest-stage occupancy reward和transition graph的transitive-ancestor floor：target reward=1，所有能沿有向stage transitions到达target的ancestors=0，越过target或无关stage=-1。四rows固定为 `[1,-1,-1,-1]`、`[0,1,-1,-1]`、`[0,0,1,-1]`、`[0,0,0,1]`。
+- Q-learning使用fresh table、`gamma=0.99`、visit-count `N^-0.6`、epsilon在20k前80%从1退火到0；每个skill共5000 episodes，不使用solver/replay/imitation data。
+- Checkpoints固定为4k/8k/12k/18k/19k/20k，每次512 common layouts/skill；last-3全部post-anneal。Independent final另用512 layouts/skill。
+- 20k diagnostic gate要求四个固定target stage rates和goal native success各 `>=0.80`，且last-3全部通过；不允许用best row permutation替换固定oracle targets。保存terminal matrix、Q/visits、curves、四skill rollout contact sheet与manifest，并人工核对pickup/open/goal真实性。
+- 若通过，再写DoorKey online discovery+balanced-transition replay计划；若失败，不直接增加预算，先按stage定位是goal credit、door interaction还是compact-state alias。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
