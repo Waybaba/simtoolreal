@@ -5,7 +5,7 @@
 >
 > 当前阶段：Phase 3 fixed-layout gate 已通过但 layout generalization 失败；Phase 4A 官方 MiniGrid 环境审计已通过，Phase 4B 正在定位长时序 PPO 的部署失败。
 >
-> 当前动作：Phase 5H scale-aware tile probe 失败并停止调参。下一步审计本地 MiniGrid GoToObject 轻量 object-centric 任务，再决定是否作为下一 public skill environment。
+> 当前动作：Phase 5I MiniGrid GoToObject environment gate 已通过。下一步运行 mission-free tabular balanced-oracle control upper bound；通过前不跑无监督 objective。
 
 ## 一眼看完整流程
 
@@ -1454,7 +1454,7 @@ Run：`frozenlake_tile_transfer_20260722_070011`
 
 ## Phase 5I：Next Public Object-centric Environment Audit
 
-状态：`候选审计待运行`
+状态：`通过`
 
 停止 FrozenLake representation 变体后，下一候选优先使用已安装 MiniGrid 的 `GoToObject` 类任务：
 
@@ -1463,6 +1463,66 @@ Run：`frozenlake_tile_transfer_20260722_070011`
 3. 先查询本地 registry、reset reproducibility、object count/type/color、mission依赖与 scripted reachability；不先训练 PPO。
 4. 只有至少两种对象 relation 可在相同 environment distribution 中稳定到达，才预注册 skill classes、random frequency、oracle control 与无监督 baseline。
 5. 若本地 GoToObject API 仍把 mission/target label直接放入 observation，实验必须明确屏蔽该字段，不能把任务答案作为 skill representation。
+
+### 本地 API 证据
+
+- MiniGrid 3.1.0 注册了 `MiniGrid-GoToObject-6x6-N2-v0` 与 8x8-N2；第一轮固定官方 6x6-N2，默认 max steps 180。
+- 每个 reset 随机放置两个 `(type,color)` 唯一对象，type 来自 key/ball/box，color 来自六色；mission 随机指定其中一个。
+- 原 observation 是 `image/direction/mission`。后续 policy 必须使用 `FullyObsWrapper` 后接 `ImgObsWrapper`，最终只暴露 full-grid image ndarray；mission、targetType、target_color、target_pos 均不可进入 policy/skill reward。
+- 源码文档把 pickup 写为 unused，但实测五个 seeds 的 base `Actions.pickup` 均真实移除前方对象并写入 `env.unwrapped.carrying`，不终止且 reward 0。它可作为 mission-independent object interaction。
+
+### 预注册 Semantic Stages
+
+只读取 grid object positions、agent position 与 `carrying` 做**审计标签**，不读取 mission target：
+
+1. `object_far`：agent 不携带对象，且与所有 floor key/ball/box 的 Manhattan distance都大于 1。
+2. `object_adjacent`：agent 不携带对象，且至少与一个 floor object Manhattan distance为 1。
+3. `object_carried`：`carrying` 非空，不区分 object 是否为 mission target。
+
+三类是 reach→pickup 的最短 manipulation hierarchy；暂不增加 drop、对象 type/color skill，避免第一轮把 identity 与 relation 混在一起。
+
+### Environment Audit Gate
+
+- Seeds `7/17/27/37/47`；reset grid/agent/direction/mission reproducible，full RGB renderer 与 mission-free policy observation shape 固定。
+- Script 对每 seed 选择一个 floor object，不因 mission target 改目标；保存 far、adjacent、carried 三帧，要求三 stages 全出现、pickup 后 floor object count 减 1、carrying identity与被选 object一致。
+- 五个 scripted runs 中至少一个拾取 non-target object且仍判 `object_carried`，证明 semantic stage 不偷用 mission/native reward。
+- Random 每 seed 2,048 episodes、每 episode最多64步，只采样 left/right/forward/pickup/drop，不使用 toggle/done；统计 furthest stage。Gate 要求 aggregate adjacent 与 carried 均非零，数值只用于决定 sparse程度，不在结果后降阈值。
+- Contact sheet 人工确认 far→adjacent→object removed/carried 的画面变化；若 renderer 不显示 carrying，manifest 的 floor-object removal 与 carrying state仍必须一致，并明确视觉不可观测限制。
+- 本阶段不训练 PPO。全部 gate 通过后才冻结 tabular/oracle control representation 与 skill-discovery baseline。
+
+### Phase 5I 结果：通过
+
+Run：`gotoobject_audit_20260722_070736`
+
+- Environment：MiniGrid 3.1.0，6x6-N2，180 max steps、7 native actions；raw obs keys 为 image/direction/mission，mission-free wrapper 输出纯 `6x6x3 ndarray`，render 为 `192x192x3`，reset signature 可复现。
+- 五个 scripted seeds 全部严格经过 stages `0→1→2`，floor object counts `2→2→1`，carrying type/color 与被选 object一致。
+- Seed 7 的 mission 是 purple box，但脚本拾取 green box；仍得到 `object_carried`。这条 non-target 反例证明 classifier 不读 mission/native target。
+- Random 10,240 episodes 的 furthest far/adjacent/carried counts 为 `1140/3123/5977`；曾访问各 stage 的 episode counts 为 `9768/9100/5977`。三类都自然可达，carried 不是极稀疏事件。
+- 画面确认 far→adjacent→object removed。Full renderer 不在 agent 上显示 carrying object，因此 carried 必须使用 trajectory change 或 state audit，不能从孤立 final RGB 假装可见。
+
+![MiniGrid GoToObject mission-independent relation audit](outputs/skill_discovery/minigrid_gotoobject/gotoobject_audit_20260722_070736/gotoobject_relation_audit.png)
+
+> [结果]
+> GoToObject 是当前更合适的 public bridge：它有真实 object removal/carrying interaction、随机 layout 和自然探索覆盖，同时避免 DoorKey 的 key→door→goal 长层级。下一步先验证简单 tabular controller，仍不直接上 PPO。
+
+## Phase 5J：GoToObject Mission-free Tabular Control
+
+状态：`balanced-oracle 计划已冻结，尚未运行`
+
+### Policy State 与动作
+
+- 每步 policy key 只包含 agent `(x,y,dir)`、两个 floor object positions 的排序 tuple（被携带后用 sentinel padding）与 `carrying_bit`；不包含 object type/color、mission、targetType/target_color/target_pos 或 native reward。
+- 该 key 是 control upper-bound 的 compact relational state，不是最终 visual representation。它刻意丢弃 identity，只回答三种 relation 是否可控。
+- Action space 固定为 left/right/forward/pickup/drop 五项；不使用 toggle/done，episode horizon固定64并由 trainer自行截断。
+- Terminal semantic class 使用 Phase 5I 的 far/adjacent/carried classifier。Native mission reward完全忽略。
+
+### Balanced-oracle Seed-7 Gate
+
+- 三 skills 对三个 stages使用 seed-determined random permutation target；terminal reward `1[class==target]`，仅作 control/symmetry upper-bound。
+- Tabular Q-learning，100k episodes，skills round-robin，gamma 0.99，visit-count step size `N^-0.6`，epsilon `1→0` 在前80% episodes线性退火。
+- 每5k episodes用固定 common-random-number layout seeds做 1024 eval episodes/skill；evaluation assignment 仍事后求最佳 permutation。
+- Final far/adjacent/carried matched rates各 `>=0.90`，且 last-5 checkpoints全部通过；保存 Q table、outcome curves、五 seed/layout representative rollouts和 relation manifest。
+- 若 seed 7 失败，不延长预算或换 PPO；先检查 compact state aliasing与 exact-terminal adjacent credit。只有 balanced oracle 通过，才在同配置下比较 random、plain semantic DIAYN 与 semantic spread。
 
 ## Phase 6：迁移到 Hammer
 
@@ -1767,6 +1827,14 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - Full-label 1-NN 在 8x8 original 可达 0.959，但 scale+style 仅 0.609，表明 objective 与 invariance 是两个独立 gap。
 - 决定：拒绝 `top4_tile_delta`，不扫描 pooling/top-k。离开 FrozenLake，先审计 MiniGrid GoToObject 作为轻量 object-centric public bridge。
 
+### D-031：GoToObject 通过候选 Gate，先做 Tabular Control
+
+- 日期：2026-07-22
+- Mission-free obs、seed reproducibility、五 seed scripted far→adjacent→carried 与 non-target pickup 全通过。
+- Random 10,240 episodes 中 carried furthest 5,977，三 relation 自然可达且不需要长层级探索。
+- 限制：full renderer 只显示 floor object 消失，不在 agent 上显示 carrying；视觉方法必须用 trajectory。
+- 决定：先用无 mission/type/color 的 compact relational key 跑 100k balanced-oracle control gate；通过前不跑 semantic DIAYN/PPO。
+
 ## 实验日志
 
 ### 2026-07-22：项目启动
@@ -2007,3 +2075,14 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 > [方向变化]
 > 停止 FrozenLake representation sweep。下一步只审计 MiniGrid GoToObject 的本地 API、对象关系与 scripted controllability，先确认它比 DoorKey 更适合作为轻量 object-centric bridge。
+
+### 2026-07-22：MiniGrid GoToObject Environment Gate 通过
+
+> [结果]
+> Mission-free full observation、五 seed far/adjacent/carried scripted relations、真实 object removal 和 random reachability全部通过；seed 7 non-target pickup 排除了 mission target泄漏。
+
+> [问题]
+> Carrying object 不直接画在 agent 上，孤立 final frame视觉不完备。后续 visual metric 必须使用 start/middle/final change，state 只做审计标签。
+
+> [计划]
+> 下一步实现 compact relational tabular Q-learning，先跑 seed-7 balanced-oracle 100k control upper bound。只有 final与last-5 gates通过才比较无 target objectives。
