@@ -2630,6 +2630,45 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 > [里程碑]
 > Taxi环境与数据完整性通过，但frozen full-frame DINO reference upper bound失败。即使完整覆盖online exploration domain并允许train-stage labels计算centroids，DINO仍几乎无法识别passenger onboard；这把问题从“rollout distribution没有覆盖”进一步收窄到“generic full-image representation不保留目标object interaction”。下一方法必须改变representation source或object-centric structure，不能只把同一DINO接到另一个reward。
 
+## Phase 5ZO：GoToObject RGB Object-graph Metric
+
+状态：`预注册；待数据与parser gate`
+
+### 研究问题与边界
+
+Taxi已经证明完整online domain与oracle reference centers也不能保证full-frame DINO保留object interaction。Hammer当前又没有可工作的RTX renderer。因此下一步回到已经通过control与final-policy robustness的官方`MiniGrid-GoToObject-6x6-N2-v0`，只回答一个更小的问题：**从RGB显式恢复agent/object graph，是否能在随机探索分布中稳定区分far、adjacent与carried，并显著优于同帧full-image feature。**
+
+本阶段不训练skill policy，不读取mission/target，不使用MiniGrid structured observation作为metric输入，也不修改GoToObject环境。Oracle state只用于保存审计标签和最终评价。Object graph使用官方renderer的tile geometry与模板，属于renderer-aware visual upper bound，不是通用VLM，也不宣称style invariance或可直接迁移到Hammer。
+
+### 冻结数据协议
+
+- 每条样本只保存official `192x192x3` RGB current frame，以及审计用agent pose、floor object records、carrying与semantic stage。
+- Reference split固定为scripted far→adjacent→pickup trajectories，seed从`200,000`顺序增加，按stage收集各512张unique frames。
+- Primary audit固定为fresh random-policy trajectories，episode seeds从`1,300,000`顺序增加，动作仅left/right/forward/pickup/drop，按stage收集各512张unique frames。
+- 两split内部frame hash必须唯一，且reference/audit之间hash交集为0；两边stage counts都必须严格为`512/512/512`。Random audit保留任意agent orientation、object type/color与部分pickup后的状态，不能只使用成功策略endpoint。
+- 保存3xN联系表，人工确认agent、两个/一个floor objects与oracle stage一致；data/parser gate通过后才运行GPU DINO编码。
+
+### 唯一 Object-centric Candidate
+
+`rgb_template_object_graph`只读取当前RGB：
+
+1. 按公开6x6 grid把192像素等分为32像素tiles；不使用state选择crop。
+2. 使用MiniGrid官方`Grid.render_tile`离线生成empty/wall、四个agent directions、key/ball/box x六种colors、highlight on/off模板。每个观测tile只按RGB nearest-template解析；inference不读取grid object、agent pose、carrying或mission。
+3. 从解析结果得到agent cell、floor object cells与count。固定语义规则为：floor object count小于reset count 2时为`object_carried`；否则最近agent-object Manhattan distance等于1为`object_adjacent`，其余为`object_far`。
+4. 该规则、模板集合和nearest-template距离在看audit结果前冻结；不扫描tile size、阈值、颜色范围或shape classifier。
+
+### Baselines 与 Gates
+
+- `raw_current_reference`：current RGB固定32x32 downsample、L2 normalize，reference split按oracle stage求centroid，audit只做nearest centroid。
+- `dinov2_current_reference`：冻结`facebook/dinov2-small` CLS，使用相同reference labels与audit nearest-centroid协议；不finetune、不crop、不读取audit labels。
+- Object-graph data gate：agent cell exact rate、floor object count exact rate各`>=0.99`；parser必须输出且只输出一个agent；audit中三类预测均非空。
+- Object-graph semantic gate：audit overall accuracy与三个stage recall各`>=0.98`，`object_far`误报为`object_carried`不超过1%。
+- 结构优势判定：object-graph audit macro recall至少比DINO current高0.10。若object graph与DINO都通过0.98，则只得出“该官方renderer不需要额外object-centric结构”，不声称优势；若parser通过但优势gate失败，它只保留为visual oracle；若parser本身失败，停止该candidate且不改模板规则。
+- 只有object-graph semantic与结构优势同时通过，下一大计划才把该frozen RGB stage接入Phase 5X同配置的online discovery，先跑单seed。当前阶段不提前启动policy训练。
+
+> [大计划]
+> 先用CPU生成并审计3,072张balanced RGB；parser gate通过后再用一张空闲GPU编码DINO。长命令按约5--10分钟间隔检查，日常运行只写一行log，完成或失败才写里程碑。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
