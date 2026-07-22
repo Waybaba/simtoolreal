@@ -3,9 +3,9 @@
 > [当前状态]
 > 分支：`codex/skill-discovery`
 >
-> 当前阶段：轻量环境的symbolic discovery/control链已建立；DoorKey 5x5 oracle-semantic online discovery三种子通过，8x8与neural-control扩展失败。Frozen DINO causal decoder在successful-policy sequences上通过，但替换online exploration reward后0/3失败。
+> 当前阶段：DoorKey 5x5 oracle-semantic discovery通过，但visual reward因exploration distribution shift而0/3失败并停止。下一public graphical bridge Taxi-v4的完整environment gate已经通过。
 >
-> 当前动作：Phase 5ZL已经按预注册停止DoorKey online visual路线。失败来自successful-policy→online-exploration distribution shift与premature visual goal，不通过增加persistence、terminal signal、threshold或重拟合追结果；下一步回到研究总结与新环境选择，Hammer继续后移。
+> 当前动作：Taxi-v4的404-state exploration domain可在训练前完整覆盖。下一步先冻结train/audit destination+orientation split，比较raw/DINO/reference semantic metric；metric通过前不训练Taxi skill objective，Hammer继续后移。
 
 ## 一眼看完整流程
 
@@ -2550,7 +2550,7 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 
 ## Phase 5ZM：Gymnasium Taxi-v4 Public Graphical Environment Gate
 
-状态：`环境运行前协议冻结，尚未实现`
+状态：`完整environment gate通过`
 
 ### 选择理由与已知边界
 
@@ -2567,6 +2567,20 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 - 对每个scripted关键state渲染四种taxi orientations；要求shape/dtype一致、同stage orientation确实可改变pixels，同时waiting/onboard/delivered三stage在至少一个共同layout context下不是相同图像。人工检查contact sheet中的passenger disappearance、taxi、hotel与terminal passenger均真实可见。
 - 运行4,096条只采样official action mask的random episodes、horizon 200，报告pickup/onboard/delivered频率；onboard与native delivered均至少出现一次才说明rare modes可由自然探索到达。该频率只用于设计后续balanced audit，不作为算法成功。
 - Gate通过后，下一大计划才定义Taxi的train/audit state-pair split与raw/DINO/semantic metric；通过前不训练skill objective、不编码全量DINO、不增加rainy/fickle variants。
+
+### 完整运行结果
+
+- Run：`taxi_environment_audit_20260722_133859`
+- 本机Gymnasium 1.3.0官方 `Taxi-v4` API为500-state、6-action、350x550 RGB、200-step TimeLimit；dry `P` table每个state-action均为probability 1的确定性transition。
+- 从300个合法initial states遍历official transitions得到404个reachable states，包含4个native successful terminal states `0/85/410/475`，与官方domain说明一致。
+- Seeds 7/17/29/37/47的BFS最短真实rollout全部只含一次pickup与一次dropoff，并以reward +20 native termination结束。每seed的illegal pickup/dropoff均reward -10、state与semantic stage不变，10/10反例通过。
+- 每个critical state的四个taxi orientations产生四个不同RGB hashes，确认orientation是必须保留的history nuisance。Waiting/onboard/delivered三帧hash不同，shape/dtype均为 `(350,550,3)` uint8。
+- 4,096条action-mask random episodes共774,164 transitions；2,802条pickup/onboard（0.684），542条native delivered（0.132）。三stage可自然到达，delivered稀有但不需要DoorKey式长时间稀疏探索。
+
+![Taxi-v4 scripted semantic stage audit](outputs/skill_discovery/taxi/taxi_environment_audit_20260722_133859/taxi_scripted_stage_audit.png)
+
+> [里程碑]
+> Taxi-v4 environment gate完整通过。它提供短且可组合的pickup→transport→dropoff链、自然不平衡但可达的terminal event，以及可在训练前穷举的完整online state domain；同时orientation造成同state多图，迫使后续视觉方法显式处理nuisance而不能使用DoorKey的single-frame key cache捷径。
 
 ## Phase 6：迁移到 Hammer
 
