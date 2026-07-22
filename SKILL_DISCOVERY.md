@@ -1899,6 +1899,16 @@ Run：`gotoobject_blockwise_spread_replay_seed7_20260722_101916`
 > [里程碑]
 > 这是第一个从online discovery开始、固定20k environment budget且independent final三类全部超过0.95的集成run。它仍不是formal pass；下一步不重训或增加replay sweep，而是对冻结的final policy做预注册多组held-out seed-block audit，判断0.955是否跨evaluation layouts稳定，再决定是否进入multi-seed integrated runs。
 
+## Phase 5U：Frozen Final-policy Seed-block Audit
+
+状态：`evaluation-only计划已冻结，尚未运行`
+
+- 唯一输入是Phase 5T保存的final `q_table.npz`与`metrics.json`；不恢复training、不更新Q/visits、不改变matrix，也不挑选checkpoint。
+- 固定评估5个互不重叠的seed blocks，seeds为 `seed + 1,100,000 + block_index * 100,000`，`block_index=0..4`。每个block使用512 common layouts/skill，与原final的 `seed+900,000` 不重叠。
+- 每个block独立做best permutation assignment并报告far/adjacent/carried rates。Robustness gate要求5/5 blocks中三类都 `>=0.90`；同时报告每类mean、standard deviation和worst-block rate。
+- Saved-Q loader必须核对relation key shape、Q shape、finite values和无重复keys；审计输出保存到原run目录的 `final_policy_seed_block_audit.json`。
+- 该audit不替代Phase 5T失败的temporal checkpoint gate。若5/5通过，下一正式证据是用至少3个training seeds重跑integrated replay算法，并把未来last-3 checkpoints放在epsilon归零之后；若失败，先停止multi-seed扩张并定位layout coverage。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
