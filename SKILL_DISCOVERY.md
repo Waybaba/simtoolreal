@@ -2915,7 +2915,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/frame_pair_capacity_202607
 
 ## Phase 5ZV：MountainCar Balanced Frame-pair Representation
 
-状态：`预注册；未生成正式数据`
+状态：`完成；data/localization/semantic gates全部通过`
 
 ### Frozen Dataset
 
@@ -2941,6 +2941,27 @@ Run：`outputs/skill_discovery/mountaincar_continuous/frame_pair_capacity_202607
 
 > [大计划]
 > 先用四个CPU processes生成完整pair dataset并检查联系表；通过后在一张空闲GPU上一次性编码4,096帧DINO。长压缩/编码用约300秒阻塞等待，普通进度只写一行log。
+
+### Phase 5ZV 结果
+
+- Dataset：`frame_pair_dataset_20260722_164825`。四个class shards共2,048 pairs / 4,096 full-resolution RGB；reference/audit counts均严格`256/256/256/256`，各有1,024个unique pair hashes，跨split overlap为0。Predicates、finite、shape/dtype与联系表全部通过。
+- DINO：`frame_pair_dinov2_20260722_165037`，物理GPU 1编码4,096帧耗时28.81秒，输出`2048x2x384` CLS和`2048x1152` pair features；hash/class/split alignment exact。
+- Final metric：`frame_pair_metric_20260722_165307`。Median reference background无car残影；RGB car-x与oracle before/after positions的Spearman为`0.999987/0.999986`，delta sign accuracy为1.0。
+
+| Method | Accuracy / macro | Left | Valley return | Right climb | Native goal |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Raw pair 1-NN | 0.997 | 1.000 | 1.000 | 1.000 | 0.988 |
+| DINOv2 pair 1-NN | 0.695 | 1.000 | 1.000 | 0.781 | **0.000** |
+| Median-background car motion 1-NN | **0.996** | 1.000 | 1.000 | 0.996 | 0.988 |
+
+- Candidate localization与semantic gates全部通过。Candidate只错4/1,024 audit pairs；DINO把全部256个native-goal误报为left momentum，且从未预测goal。
+- 结论不是“raw pixels普遍优于DINO”，而是该固定2D场景的语义由小目标位置与帧间位移决定，global CLS会丢失关键局部运动。显式RGB motion feature更准确、更便宜也更容易审计。
+- 仍有限制：balanced audit每个pair都属于四个registered relations；1-NN没有`none/OOD`输出。接online reward前必须在自然rollout上冻结rejection rule并检查普通transition到goal的false positive。
+
+![MountainCar frame-pair metric](outputs/skill_discovery/mountaincar_continuous/frame_pair_metric_20260722_165307/frame_pair_metric.png)
+
+> [里程碑]
+> MountainCar frame-pair representation已经通过完整离线gate：RGB-derived car position与运动方向近乎精确，四类macro recall 0.996；generic DINO却完全漏掉native-goal。下一关键问题不再是“能否分四类”，而是“真实rollout中的none transitions会不会被强制误分类”。在回答前不接policy reward。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3395,6 +3416,14 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：四类各8,192个合法transitions；unique pair hashes为`7,936/7,865/7,927/4,902`，motion-visible rate全1.0。
 - 解释：native-goal单帧before/after分别只有195/159种，但有方向的组合产生4,902种pair，超过正式dataset所需512并保留充足余量。
 - 决定：允许下一阶段预注册balanced frame-pair dataset；candidate必须从RGB pair恢复position与delta，不能读取velocity state。
+
+### D-040：显式 RGB Motion 通过，DINO Goal Recall 为零
+
+- 日期：2026-07-22
+- 证据：2,048 balanced pairs，split pair hashes无重叠；car-x correlations约0.99999，delta sign 1.0。
+- 结果：RGB car-motion accuracy/macro 0.996，四类recall最低0.988；DINO为0.695且native-goal recall 0。
+- 解释：固定2D场景需要保留小car的空间位置与局部位移，global image embedding不是自然选择。
+- 决定：candidate通过离线representation gate，但暂不作为reward；先审计natural-rollout none/OOD false positives并冻结rejection rule。
 
 ## 实验日志
 
