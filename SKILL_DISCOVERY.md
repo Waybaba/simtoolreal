@@ -3,9 +3,9 @@
 > [当前状态]
 > 分支：`codex/skill-discovery`
 >
-> 当前阶段：轻量环境的symbolic discovery/control链已建立；DoorKey 5x5 online discovery三种子通过，8x8与neural-control扩展失败。Frozen DINO current的raw sequence graph失败，但无标签causal ordered-cluster decoder在fresh sequences上通过。
+> 当前阶段：轻量环境的symbolic discovery/control链已建立；DoorKey 5x5 oracle-semantic online discovery三种子通过，8x8与neural-control扩展失败。Frozen DINO causal decoder在successful-policy sequences上通过，但替换online exploration reward后0/3失败。
 >
-> 当前动作：Phase 5ZK允许进入on-demand visual lookup，但尚未接入online discovery。下一步必须先冻结visual-reward training协议，并继续把policy observation与最终评价中的oracle/compact state边界写清楚；Hammer继续后移。
+> 当前动作：Phase 5ZL已经按预注册停止DoorKey online visual路线。失败来自successful-policy→online-exploration distribution shift与premature visual goal，不通过增加persistence、terminal signal、threshold或重拟合追结果；下一步回到研究总结与新环境选择，Hammer继续后移。
 
 ## 一眼看完整流程
 
@@ -2492,7 +2492,7 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 
 ## Phase 5ZL：Causal Visual Metric Online Discovery
 
-状态：`训练运行前协议冻结，尚未实现`
+状态：`三seed完整运行0/3，正式失败并停止`
 
 ### 单一替换与固定条件
 
@@ -2511,6 +2511,42 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 - 每个seed必须先通过visual bootstrap structural gate并运行policy phase；final四target furthest-stage rates、final-state rates、goal native success都各 `>=0.80`，最后三个checkpoints全部通过原specialization gate。
 - 三个runs的compact-state RGB alias均为0、四个raw clusters与四个decoded stages均被training查询。只有3/3 signal gates通过才允许声称causal visual metric成功替代oracle discovery reward。
 - Seeds 7/17/29各使用GPU 0/1/2的一张卡做on-demand DINO cache，GPU 3保持空闲。若任一失败，不改center、order、decoder、episode budget、threshold或seed set；保留失败并停止该online visual路线。
+
+### 三 Seed 完整运行结果
+
+- Seed 7：`doorkey5_online_visual_causal_discovery_seed7_20260722_131650`
+- Seed 17：`doorkey5_online_visual_causal_discovery_seed17_20260722_131700`
+- Seed 29：`doorkey5_online_visual_causal_discovery_seed29_20260722_131708`
+- Post-hoc只读audit：`doorkey5_online_visual_causal_discovery_replay_audit_20260722_132900.json`
+- 三个runs各完整运行20,000 episodes，耗时672--680秒；GPU 0/1/2各运行一个seed，GPU 3空闲。所有进程正常退出，没有缩短预算。
+
+| Seed | Discovered assignment | Final target rates by skill | Goal native success | Last-3 | Visual cache |
+| ---: | --- | --- | ---: | :---: | :---: |
+| 7 | 2 / 1 / 0 / **3** | 1.0 / 1.0 / 1.0 / **0.0** | 0.0 | fail | pass |
+| 17 | 0 / **3** / 1 / 2 | 1.0 / **0.0** / 1.0 / 1.0 | 0.0 | fail | pass |
+| 29 | 2 / 1 / **3** / 0 | 1.0 / 1.0 / **0.0** / 1.0 | 0.0 | fail | pass |
+
+- Visual plumbing不是失败点：每run缓存164个unique compact states、编码164帧、约85万次lookup，RGB alias为0；四raw clusters和四decoded stages均被查询，bootstrap structural gate 3/3通过。
+- Goal被分配给三个不同skill，但缺失始终跟随target stage 3，不跟随skill index。六个checkpoints从3k到15k都保持另外三个targets为1、goal为0，因此不是末尾collapse或单seed assignment偶然。
+- 人工cache contact sheet显示图像、key carrying、open door和goal render正常。Seed-7 curve中三条通过线重合在1.0，goal全程为0。
+
+![DoorKey online visual cache audit](outputs/skill_discovery/minigrid_doorkey_training/doorkey5_online_visual_causal_discovery_seed7_20260722_131650/visual_cluster_cache_audit.png)
+
+![DoorKey online visual discovery curves](outputs/skill_discovery/minigrid_doorkey_training/doorkey5_online_visual_causal_discovery_seed7_20260722_131650/stage_curves.svg)
+
+### Post-hoc Replay 根因审计
+
+- Audit只读取完成后的cache keys和bootstrap replay；oracle未进入训练。对非终止transition，用保存的next compact state恢复真实irreversible stage，因此任何decoded goal都明确是premature goal，而不可能是被排除的native goal terminal。
+- 164个online unique states的oracle→raw-decoded confusion为 `[[48,0,0,0],[21,43,0,0],[0,18,26,4],[0,0,0,4]]`。Raw goal cluster的8个unique states中只有4个是真goal，另外4个是open-door states；successful-policy数据没有覆盖这个比例的探索pose。
+
+| Seed | Nonterminal decoded-goal rate | Premature-goal episodes | Decoded-goal oracle key/door/goal counts |
+| ---: | ---: | ---: | --- |
+| 7 | 0.191 | 0.369 | 3,397 / 55,234 / 0 |
+| 17 | 0.179 | 0.352 | 4,781 / 50,963 / 0 |
+| 29 | 0.187 | 0.375 | 2,348 / 55,347 / 0 |
+
+> [里程碑]
+> Phase 5ZL正式0/3失败。Phase 5ZK只证明causal decoder适用于frozen successful-policy distribution；online exploration覆盖更多key/door poses，raw goal cluster混入open-door states，而不可回退decoder把错误永久锁成goal。Semantic-spread于是奖励大量“开门后特定pose”而不是真正到达goal。该结果建立了明确的offline-policy→online-exploration representation gap，按预注册停止DoorKey online visual reward，不添加native terminal oracle或在失败runs上调视觉规则。
 
 ## Phase 6：迁移到 Hammer
 
