@@ -52,6 +52,7 @@ class BlockwiseSpreadConfig:
     semantic_coverage_weight: float = 1.0
     bootstrap_replay: str = "none"
     eval_interval: int = 3_000
+    evaluation_checkpoints: tuple[int, ...] | None = None
     eval_episodes_per_skill: int = 512
     stability_checkpoints: int = 3
     stage_rate_gates: tuple[float, float, float] = (0.90, 0.90, 0.90)
@@ -65,6 +66,16 @@ class BlockwiseSpreadConfig:
             raise ValueError("horizon and eval interval must be positive")
         if self.policy_episodes % self.eval_interval != 0:
             raise ValueError("policy episodes must be divisible by eval interval")
+        if self.evaluation_checkpoints is not None:
+            checkpoints = self.evaluation_checkpoints
+            if tuple(sorted(set(checkpoints))) != checkpoints:
+                raise ValueError("evaluation checkpoints must be sorted and unique")
+            if not checkpoints or checkpoints[0] <= 0:
+                raise ValueError("evaluation checkpoints must be positive")
+            if checkpoints[-1] > self.policy_episodes:
+                raise ValueError("evaluation checkpoint exceeds policy budget")
+            if len(checkpoints) < self.stability_checkpoints:
+                raise ValueError("not enough checkpoints for stability gate")
         if not 0 < self.epsilon_decay_fraction <= 1:
             raise ValueError("epsilon decay fraction must be in (0, 1]")
         if self.bootstrap_replay not in {"none", "reverse_once"}:
@@ -85,6 +96,15 @@ def _phase_epsilon(config: BlockwiseSpreadConfig, episode: int, total: int) -> f
     return config.epsilon_start + progress * (
         config.epsilon_end - config.epsilon_start
     )
+
+
+def _is_evaluation_checkpoint(
+    config: BlockwiseSpreadConfig,
+    policy_episode: int,
+) -> bool:
+    if config.evaluation_checkpoints is not None:
+        return policy_episode in config.evaluation_checkpoints
+    return policy_episode % config.eval_interval == 0
 
 
 def _online_config(config: BlockwiseSpreadConfig) -> GoToObjectTrainConfig:
@@ -287,7 +307,7 @@ def _train_phase(
                 break
         if replay_buffer is not None:
             replay_buffer.append(replay_episode)
-        if evaluate and (episode + 1) % config.eval_interval == 0:
+        if evaluate and _is_evaluation_checkpoint(config, episode + 1):
             evaluation = evaluate_q_table(
                 q_table,
                 policy_config,
@@ -492,6 +512,10 @@ def main() -> None:
     parser.add_argument("--policy-episodes", type=int, default=15_000)
     parser.add_argument("--horizon", type=int, default=64)
     parser.add_argument("--eval-interval", type=int, default=3_000)
+    parser.add_argument(
+        "--evaluation-checkpoints",
+        help="comma-separated policy episode checkpoints",
+    )
     parser.add_argument("--eval-episodes", type=int, default=512)
     parser.add_argument(
         "--bootstrap-replay",
@@ -500,6 +524,11 @@ def main() -> None:
     )
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    evaluation_checkpoints = (
+        tuple(int(value) for value in args.evaluation_checkpoints.split(","))
+        if args.evaluation_checkpoints
+        else None
+    )
     config = BlockwiseSpreadConfig(
         seed=args.seed,
         bootstrap_episodes=args.bootstrap_episodes,
@@ -507,6 +536,7 @@ def main() -> None:
         horizon=args.horizon,
         bootstrap_replay=args.bootstrap_replay,
         eval_interval=args.eval_interval,
+        evaluation_checkpoints=evaluation_checkpoints,
         eval_episodes_per_skill=args.eval_episodes,
     )
     replay_tag = "_replay" if config.bootstrap_replay != "none" else ""

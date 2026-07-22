@@ -10,6 +10,7 @@ import numpy as np
 
 from skill_discovery.train_minigrid_gotoobject_blockwise import (
     BlockwiseSpreadConfig,
+    _is_evaluation_checkpoint,
     _replay_frozen_transitions,
     common_layout_seed,
     snapshot_spread_matrix,
@@ -26,6 +27,20 @@ class BlockwiseSpreadTrainerTest(unittest.TestCase):
         seeds = [common_layout_seed(7, 500_000, episode) for episode in range(6)]
         self.assertEqual(seeds[:3], [7_500_000] * 3)
         self.assertEqual(seeds[3:], [7_500_001] * 3)
+
+    def test_explicit_evaluation_checkpoints_override_interval(self) -> None:
+        config = BlockwiseSpreadConfig(
+            bootstrap_episodes=3,
+            policy_episodes=12,
+            eval_interval=3,
+            evaluation_checkpoints=(2, 10, 11, 12),
+        )
+        observed = [
+            episode
+            for episode in range(1, 13)
+            if _is_evaluation_checkpoint(config, episode)
+        ]
+        self.assertEqual(observed, [2, 10, 11, 12])
 
     def test_snapshot_calibrates_unique_spread_rows(self) -> None:
         config = BlockwiseSpreadConfig(

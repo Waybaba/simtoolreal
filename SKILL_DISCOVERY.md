@@ -1928,6 +1928,18 @@ Artifact：`gotoobject_blockwise_spread_replay_seed7_20260722_101916/final_polic
 > [里程碑]
 > Bootstrap relabel replay已同时具备强independent-final和5组held-out layout证据。单seed继续调参的信息价值已很低；进入至少3个training seeds的integrated replication，并在运行前修正未来checkpoint schedule，使temporal last-3全部位于epsilon退火结束之后。
 
+## Phase 5V：Integrated Replay Multi-seed Replication
+
+状态：`3-seed formal计划已冻结，尚未运行`
+
+- Training seeds预先固定为 `7/17/29`，不因bootstrap collision或训练失败替换seed。三个runs可并行，但配置逐值相同。
+- 每个seed完整运行5k online semantic-spread bootstrap、permutation gate、runner-up/top calibration、一次320k以内的reverse relabel replay，以及15k fixed-CRN frozen-policy training。总environment budget仍为20k/seed。
+- Bootstrap gate要求三个rows的top stages构成permutation；collision立即判该seed失败并停止其policy phase，不强制assignment。
+- Policy epsilon仍在前80%即12k episodes从1退火到0。Evaluation checkpoints预先固定为 `3k/6k/9k/13k/14k/15k`，每次512 common layouts/skill；last-3因此为13k/14k/15k，全部严格位于annealing结束之后。
+- 每个seed的pass gate要求independent final far/adjacent/carried各 `>=0.90`，且13k/14k/15k三个checkpoints全部通过。Multi-seed method gate要求3/3 seeds通过；assignment row顺序可以不同，但matched stages必须完整。
+- 保存每个run的全部Phase 5T artifacts，并生成一个multi-seed summary，报告bootstrap assignments、每类mean/std/worst、每seed final/last-3和失败原因。三个代表rollout都需核对真实pickup。
+- 若2/3或更少通过，不补seed、不增加replay sweep或预算；先比较失败发生在bootstrap assignment还是policy generalization。只有3/3通过才把该小环境结构视为可迁移候选。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
