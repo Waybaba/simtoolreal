@@ -29,6 +29,7 @@ RelationKey = tuple[int, int, int, int, int, int, int, int]
 @dataclass(frozen=True)
 class GoToObjectTrainConfig:
     objective: str = "semantic_balanced"
+    reward_timing: str = "exact_terminal"
     seed: int = 7
     num_skills: int = 3
     episodes: int = 100_000
@@ -42,6 +43,7 @@ class GoToObjectTrainConfig:
     semantic_coverage_weight: float = 1.0
     eval_interval: int = 5_000
     eval_episodes_per_skill: int = 1_024
+    stability_checkpoints: int = 5
     stage_rate_gates: tuple[float, float, float] = (0.90, 0.90, 0.90)
 
     def __post_init__(self) -> None:
@@ -52,10 +54,14 @@ class GoToObjectTrainConfig:
             "semantic_balanced",
         }:
             raise ValueError("unknown objective")
+        if self.reward_timing not in {"exact_terminal", "occupancy"}:
+            raise ValueError("unknown reward timing")
         if self.num_skills != len(GOTOOBJECT_STAGES):
             raise ValueError("GoToObject probe is fixed to three skills")
         if self.episodes <= 0 or self.horizon <= 0 or self.eval_interval <= 0:
             raise ValueError("episode, horizon, and eval interval must be positive")
+        if self.stability_checkpoints <= 0:
+            raise ValueError("stability checkpoints must be positive")
         if not 0 < self.epsilon_decay_fraction <= 1:
             raise ValueError("epsilon decay fraction must be in (0, 1]")
         if len(self.stage_rate_gates) != len(GOTOOBJECT_STAGES):
@@ -89,14 +95,14 @@ class GoToObjectReward:
             config.pseudocount,
             dtype=np.float64,
         )
-        self.episode_counts = np.zeros(config.num_skills, dtype=np.int64)
+        self.reward_calls_by_skill = np.zeros(config.num_skills, dtype=np.int64)
         self.stage_counts = np.zeros(len(GOTOOBJECT_STAGES), dtype=np.int64)
         self.balanced_targets = np.random.default_rng(
             config.seed + 70_000
         ).permutation(config.num_skills)
 
     def reward(self, skill: int, stage: int) -> tuple[float, dict[str, float]]:
-        self.episode_counts[skill] += 1
+        self.reward_calls_by_skill[skill] += 1
         self.stage_counts[stage] += 1
         if self.config.objective == "random":
             return 0.0, {"diayn_reward": 0.0, "coverage_reward": 0.0}
@@ -121,7 +127,10 @@ class GoToObjectReward:
         return {
             "objective": self.config.objective,
             "semantic_counts": self.counts.tolist(),
-            "episode_counts": self.episode_counts.tolist(),
+            "reward_calls_by_skill": self.reward_calls_by_skill.tolist(),
+            "episode_counts": self.reward_calls_by_skill.tolist()
+            if self.config.reward_timing == "exact_terminal"
+            else None,
             "stage_counts": self.stage_counts.tolist(),
             "balanced_targets": self.balanced_targets.tolist()
             if self.config.objective == "semantic_balanced"
@@ -144,6 +153,19 @@ def _training_action(
     maximum = values.max()
     candidates = np.flatnonzero(np.isclose(values, maximum))
     return int(rng.choice(candidates))
+
+
+def _transition_reward(
+    reward_model: GoToObjectReward,
+    config: GoToObjectTrainConfig,
+    skill: int,
+    stage: int,
+    *,
+    terminal: bool,
+) -> tuple[float, dict[str, float]]:
+    if config.reward_timing == "occupancy" or terminal:
+        return reward_model.reward(skill, stage)
+    return 0.0, {"diayn_reward": 0.0, "coverage_reward": 0.0}
 
 
 def _values(
@@ -383,19 +405,23 @@ def train_run(
                     action_index = _training_action(q_values[skill], rng)
                 _, _, terminated, truncated, _ = env.step(POLICY_ACTIONS[action_index])
                 terminal = bool(terminated or truncated or step + 1 == config.horizon)
+                stage = semantic_stage(env)
+                reward, parts = _transition_reward(
+                    reward_model,
+                    config,
+                    skill,
+                    stage,
+                    terminal=terminal,
+                )
+                for name in reward_sums:
+                    reward_sums[name] += parts[name]
                 if terminal:
-                    stage = semantic_stage(env)
-                    reward, parts = reward_model.reward(skill, stage)
                     target = reward
                     training_counts[skill, stage] += 1
-                    for name in reward_sums:
-                        reward_sums[name] += parts[name]
                 else:
                     next_key = compact_relation_key(env)
-                    target = config.gamma * _values(
-                        q_table,
-                        next_key,
-                        create=True,
+                    target = reward + config.gamma * _values(
+                        q_table, next_key, create=True
                     )[skill].max()
                 visit_values[skill, action_index] += 1
                 step_size = float(visit_values[skill, action_index] ** -0.6)
@@ -415,9 +441,9 @@ def train_run(
         env.close()
     elapsed = time.monotonic() - started
     final = evaluate_q_table(q_table, config, seed=config.seed + 900_000)
-    recent = evaluations[-min(5, len(evaluations)) :]
+    recent = evaluations[-min(config.stability_checkpoints, len(evaluations)) :]
     stability = bool(
-        len(recent) >= 5
+        len(recent) >= config.stability_checkpoints
         and all(row["specialization_gate_passed"] for row in recent)
     )
     manifest = _write_rollout_audit(
@@ -481,23 +507,31 @@ def main() -> None:
         choices=("random", "semantic", "semantic_spread", "semantic_balanced"),
         default="semantic_balanced",
     )
+    parser.add_argument(
+        "--reward-timing",
+        choices=("exact_terminal", "occupancy"),
+        default="exact_terminal",
+    )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--episodes", type=int, default=100_000)
     parser.add_argument("--horizon", type=int, default=64)
     parser.add_argument("--eval-interval", type=int, default=5_000)
     parser.add_argument("--eval-episodes", type=int, default=1_024)
+    parser.add_argument("--stability-checkpoints", type=int, default=5)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     config = GoToObjectTrainConfig(
         objective=args.objective,
+        reward_timing=args.reward_timing,
         seed=args.seed,
         episodes=args.episodes,
         horizon=args.horizon,
         eval_interval=args.eval_interval,
         eval_episodes_per_skill=args.eval_episodes,
+        stability_checkpoints=args.stability_checkpoints,
     )
     run_id = (
-        f"gotoobject_{config.objective}_seed{config.seed}_"
+        f"gotoobject_{config.objective}_{config.reward_timing}_seed{config.seed}_"
         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
     output_dir = args.output_dir or Path(

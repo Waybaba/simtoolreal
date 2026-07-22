@@ -10,12 +10,44 @@ from skill_discovery.minigrid_gotoobject import make_gotoobject
 from skill_discovery.train_minigrid_gotoobject_skills import (
     GoToObjectReward,
     GoToObjectTrainConfig,
+    _transition_reward,
     compact_relation_key,
     train_run,
 )
 
 
 class GoToObjectSkillTrainerTest(unittest.TestCase):
+    def test_reward_timing_preserves_terminal_default(self) -> None:
+        terminal_config = GoToObjectTrainConfig(episodes=1)
+        terminal_reward = GoToObjectReward(terminal_config)
+        value, _ = _transition_reward(
+            terminal_reward,
+            terminal_config,
+            skill=0,
+            stage=int(terminal_reward.balanced_targets[0]),
+            terminal=False,
+        )
+        self.assertEqual(value, 0.0)
+        self.assertEqual(terminal_reward.reward_calls_by_skill.tolist(), [0, 0, 0])
+
+        occupancy_config = GoToObjectTrainConfig(
+            reward_timing="occupancy",
+            episodes=1,
+        )
+        occupancy_reward = GoToObjectReward(occupancy_config)
+        value, _ = _transition_reward(
+            occupancy_reward,
+            occupancy_config,
+            skill=0,
+            stage=int(occupancy_reward.balanced_targets[0]),
+            terminal=False,
+        )
+        self.assertEqual(value, 1.0)
+        self.assertEqual(
+            occupancy_reward.reward_calls_by_skill.tolist(),
+            [1, 0, 0],
+        )
+
     def test_compact_key_ignores_mission_text(self) -> None:
         env = make_gotoobject()
         try:

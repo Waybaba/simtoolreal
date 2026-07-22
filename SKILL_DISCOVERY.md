@@ -1555,12 +1555,43 @@ Run：`gotoobject_audit_20260722_070736`
 
 ## Phase 5K：GoToObject Occupancy-reward Control Diagnostic
 
-状态：`单变量干预计划已冻结，尚未运行`
+状态：`20k diagnostic 通过；100k formal 计划已冻结，尚未运行`
 
 - 环境、mission-free policy key、五动作、seed 7、gamma 0.99、visit-count learning rate、epsilon schedule 与三 skill target permutation 全部保持 Phase 5J 不变。
 - 唯一干预：从第64步 exact-terminal reward 改为每步 transition 后的 stage occupancy reward `1[stage(s_next)==target(skill)]`。这让 stationary state 的 reward/transition contract 不再依赖隐藏 timestep，也更接近后续 per-step DIAYN reward。
 - 第一轮是20k diagnostic，horizon 64，eval every2k，512 common-random-number layouts/skill。门控为 independent-final far/adjacent/carried各 `>=0.90`，且 last-3 checkpoints全部通过。
 - 若通过，再把 occupancy版本提升为100k formal baseline；若失败，不加预算，检查 greedy cycles与 carried/drop action values。只有 occupancy formal通过才比较 discovery objectives。
+
+### 20k Diagnostic 结果
+
+Run：`gotoobject_balanced_occupancy_seed7_diagnostic_20260722_075406`
+
+- 10 个 checkpoints 全部存在，耗时 `415.15s`，Q table仍为7,680 states。12k首次三类同时过门，14k/16k/18k/20k连续通过，没有 Phase 5J 的后期退化。
+- 20k fixed-eval far/adjacent/carried 为 `1.000/0.992/0.980`；独立 final 为 `0.998/0.994/0.977`，last-3 stability和combined signal gates都通过。
+- Assignment从2k到20k始终为 seed-7 target permutation `carried/far/adjacent`，没有后期换位。
+- Carried代表轨迹真实 pickup 黄色球，floor objects从2变1且 `carrying=[ball, yellow]`。Adjacent策略到达相邻格后反复执行无物体 drop来驻留；far策略用旋转驻留，行为与定义一致。
+- 旧 artifact中的 `reward_model.episode_counts` 在occupancy模式实际表示per-step reward calls（约426k/skill）；trainer随后将该字段澄清为 `reward_calls_by_skill`，exact-terminal模式保留兼容的episode counts。
+
+| Episodes | Far | Adjacent | Carried | Gate |
+| ---: | ---: | ---: | ---: | :---: |
+| 2k | 0.871 | 0.695 | 0.344 | fail |
+| 8k | 0.988 | 0.930 | 0.830 | fail |
+| 10k | 0.994 | 0.955 | 0.893 | fail |
+| 12k | 0.996 | 0.975 | 0.924 | pass |
+| 16k | 1.000 | 0.988 | 0.955 | pass |
+| 20k | 1.000 | 0.992 | 0.980 | pass |
+| Independent final | 0.998 | 0.994 | 0.977 | pass |
+
+![GoToObject occupancy-reward rollout audit](outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_balanced_occupancy_seed7_diagnostic_20260722_075406/policy_rollout_audit.png)
+
+> [结果]
+> 单变量干预强通过并呈单调改善，支持 Phase 5J 的 hidden-time aliasing 诊断。环境、compact state和tabular control容量足够；exact-terminal reward contract才是失败来源。
+
+### 100k Formal Gate
+
+- 保持 occupancy reward、seed 7、horizon 64和其余Phase 5J参数；100k episodes，eval every5k，1,024 common-random-number layouts/skill。
+- Independent-final far/adjacent/carried各 `>=0.90`，last-5 checkpoints全部通过；仍需人工核对 carried object removal与三条代表轨迹。
+- Formal通过后，下一阶段才在相同occupancy配置下预注册 random/plain semantic/semantic-spread objective comparison。
 
 ## Phase 6：迁移到 Hammer
 
