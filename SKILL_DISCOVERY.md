@@ -5,7 +5,7 @@
 >
 > 当前阶段：Phase 3 fixed-layout gate 已通过但 layout generalization 失败；Phase 4A 官方 MiniGrid 环境审计已通过，Phase 4B 正在定位长时序 PPO 的部署失败。
 >
-> 当前动作：Phase 4C fixed-map public bridge 已完成：Semantic 与 Semantic spread 均 5/5，Random/Raw 均 0/5。下一步只审计同一官方 map 的 `is_slippery=true` 随机动力学与三 outcome 可控上界，审计后才冻结训练 gate。
+> 当前动作：Phase 4D slippery public gate 完成：Plain Semantic 4/5 seeds 通过，Raw 与 spread seed 7 失败。下一步进入 Phase 5A，只做缓存图像/短轨迹的离线 visual representation probe，不在线调用 VLM 或返回 Hammer。
 
 ## 一眼看完整流程
 
@@ -893,7 +893,7 @@ Run group：`frozenlake_baselines_20260722_0515`
 
 ## Phase 4D：FrozenLake Slippery Dynamics Audit
 
-状态：`只冻结环境审计，尚未冻结训练配置`
+状态：`环境审计通过；balanced control 配置已冻结`
 
 唯一新增变量为 `is_slippery=true`；map、32-step horizon、三 outcome 定义与 native reward isolation 不变。训练前先完成：
 
@@ -903,9 +903,117 @@ Run group：`frozenlake_baselines_20260722_0515`
 4. 对每个 DP policy 做至少 5 seeds x 512 episodes Monte Carlo，确认 empirical rate 接近计算上界，并保存代表画面。
 5. 只有审计通过后，才按可控上界定义 balanced oracle 和 semantic methods 的 class-specific gate；不沿用 deterministic 0.95 gate。
 
+### Phase 4D Slippery Audit 结果：通过
+
+Run：`frozenlake_slippery_audit_20260722_0542`
+
+- 同 seed 的 stochastic state sequence 可复现；官方 transition kernel 被直接用于 DP，没有自建 dynamics。
+- 10,000 random episodes：`safe=0.0032`、`hole=0.9835`、`goal=0.0133`。
+- 32-step DP probability upper bound 与 2,560-episode empirical replay：safe `1.0000 / 1.0000`、hole `0.999997 / 1.0000`、goal `0.3733 / 0.3547`；三类误差都小于 0.05 gate。
+- 代表图确认 stochastic policy 分别保持安全、落洞、到达宝箱；goal 的低概率是 horizon + slip 的环境限制，不是 evaluator 漏检。
+
+![FrozenLake slippery optimal outcome audit](outputs/skill_discovery/frozenlake_slippery/frozenlake_slippery_audit_20260722_0542/optimal_outcome_policy_audit.png)
+
+### Phase 4D Balanced Control 计划
+
+- 相对 Phase 4C 唯一环境变化为 `is_slippery=true`；map 与 32-step horizon 不变。
+- 先运行 seeded balanced target、100k episodes、epsilon decay 0.8、tabular Q-learning；evaluation 使用 1024 episodes / skill，避免 goal rate 的小样本波动。
+- Class-specific gate 冻结为 safe `>=0.95`、hole `>=0.95`、goal `>=0.30`。Goal gate 是 DP upper bound 0.3733 的约 80%，且低于 Monte Carlo 0.3547。
+- Last-5 checkpoints 必须全部达到各自 gate；native goal success 同样 `>=0.30`。
+- 先跑 seed 7。若 balanced control 失败，不运行 semantic methods，先记录 stationary-policy/learning gap；若通过，再冻结相同配置比较 Raw、Semantic、Semantic spread。
+
+### Phase 4D Balanced Control v1：Final Pass，Stability Fail
+
+Run：`frozenlake_slippery_balanced_seed7_20260722_0551`
+
+- Final 1024 episodes / skill：safe `1.0000`、hole `1.0000`、goal/native goal `0.3711`，全部达到 class-specific gate，goal 接近 DP upper bound `0.3733`。
+- Last checkpoints 中 safe/hole 已稳定为 1.0；goal 在不同 evaluation seed sets 上为 `0.3057/0.2969/0.2871/0.3662/0.3564`，其中两次低于 0.30，last-5 gate 失败。
+- 当前 callback 每个 checkpoint 都把 episode index 加入 evaluation seed；在 stochastic environment 中，这会让 stability 同时包含 policy drift 与 Monte Carlo set drift。
+
+> [失败记录]
+> v1 完整 signal gate 保持失败，不能只报告 final 0.371。Control 本身已接近环境上界，但当前 checkpoint stability evaluator 不适用于低概率 stochastic outcome。
+
+### Phase 4D Balanced Control v1b：Common-Random-Numbers 计划
+
+- 训练 objective、seed、100k budget、Q-learning、epsilon、1024 episodes / skill 和三类 gates 全部不变。
+- 唯一变化：所有 checkpoints 使用同一组 evaluation transition seeds；final evaluation 继续使用独立 seed set。
+- 若 last-5 与 final 都通过，说明 v1 失败来自 evaluator variance；若仍失败，再诊断 constant learning-rate policy oscillation，不运行 semantic methods。
+
+### Phase 4D Balanced Control v1b 结果：Policy Oscillation
+
+Run：`frozenlake_slippery_balanced_crn_seed7_20260722_0603`
+
+- Final 独立 set 仍为 safe/hole/goal `1.000/1.000/0.371`，但 common evaluation set 上 goal 在 85k/90k/95k 为 `0.306/0.291/0.396`。
+- 因为测试 transition seeds 固定，差异来自 learned greedy action policy 改变；last-5 gate 仍失败。
+- 当前 `alpha=0.15` 为 deterministic FrozenLake 沿用的常数。Stochastic returns 下，即使 epsilon 已归零，持续的大步更新仍能让 Q action ranking 来回切换。
+
+> [失败记录]
+> CRN 没有修复 gate，故 v1 的不稳定不是纯 Monte Carlo measurement noise。Semantic methods 继续保持未运行。
+
+### Phase 4D Balanced Control v2：Visit-decay Q-learning 计划
+
+- 相对 v1b 唯一训练变化：每个 `(skill,state,action)` 的 step size 从常数 0.15 改为 `visit_count^-0.6`；该 exponent 满足 tabular stochastic approximation 的常用递减条件。
+- 100k budget、epsilon、balanced targets、CRN evaluation、1024 episodes 和 class gates 不变。
+- 若 final + last-5 通过，冻结该 learner 进入 semantic comparison；若仍失败，停止本阶段 tabular optimizer 调整，保留 DP policy ceiling 与 learning gap。
+
+### Phase 4D Balanced Control v2 结果：通过
+
+Run：`frozenlake_slippery_balanced_visit_decay_seed7_20260722_0614`
+
+- Final safe/hole/goal rates 为 `1.0000 / 1.0000 / 0.3691`，全部超过 `0.95 / 0.95 / 0.30` gate。
+- Goal 达到 DP upper bound `0.3733` 的 98.9%；native goal 与 semantic outcome rate 一致。
+- Last-5 CRN checkpoints 全部通过，完整 signal gate true；画面确认三种 stochastic trajectory outcome 真实发生。
+
+![FrozenLake slippery balanced visit-decay audit](outputs/skill_discovery/frozenlake_slippery_training/frozenlake_slippery_balanced_visit_decay_seed7_20260722_0614/policy_rollout_audit.png)
+
+> [结果]
+> v1/v1b 的不稳定来自 stochastic Q-learning 使用常数大步长，而非环境不可控或 evaluator 错误。Visit-count decay 后 stationary policy 能接近 finite-horizon DP ceiling。
+
+### Phase 4D Objective Comparison 计划
+
+固定 v2 的 100k episodes、visit-count `N^-0.6`、epsilon decay 0.8、CRN、1024 eval、class gates 和 seed 7。仅依次替换 objective：Raw terminal DIAYN、Plain Semantic DIAYN、Semantic spread。
+
+- Balanced 只作为 control upper-bound，不纳入无监督方法胜负。
+- 若 Semantic/Spread 单 seed 至少一个通过，再为有希望的方法补 5 seeds；Raw 无论结果均完整报告。
+- 若三种无 target objectives 都失败，不调整 gates 或 learner，转向 stochastic representation/objective diagnosis。
+
+### Phase 4D Objective Comparison Seed-7 结果
+
+| Method | Safe | Hole | Goal | Last-5 | Full gate |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Raw terminal DIAYN | 1.000 | 0.961 | 0.000 | fail | fail |
+| Plain Semantic DIAYN | **1.000** | **1.000** | **0.372** | pass | **pass** |
+| Semantic spread | 0.558 | 0.979 | 0.362 | fail | fail |
+
+- Raw 仍把多个 skills 用于不同 hole behavior，没有 goal skill。
+- Plain Semantic 的 goal rate `0.3721` 几乎等于 DP ceiling `0.3733`，三 outcome 与 last-5 都通过。
+- Spread 的两个 skills 同时追逐 rare goal，导致没有可稳定保持 safe 的 skill。Global occupancy bonus 在 stochastic rare-event 下过度补偿，是一个明确反例。
+- 重新渲染器按最终 assignment 搜索代表轨迹并记录 seed offset；若 assigned outcome 概率为 0，则明确标记 not found，不再用一条随机 sample 冒充代表画面。
+
+![FrozenLake slippery seed-7 method comparison](outputs/skill_discovery/frozenlake_slippery_training/frozenlake_slippery_seed7_comparison_20260722_0645/multiseed_final_replay.png)
+
+> [结果]
+> 当前最稳的无 target 方法是 Plain Semantic DIAYN，不是 Semantic spread。下一步只补 Plain Semantic 4 个 seeds；不调 spread weight 追结果。
+
+### Phase 4D Plain Semantic Multi-seed：通过但有 Collapse Seed
+
+Run group：`frozenlake_slippery_semantic_multiseed_20260722_0710`
+
+- Seeds `7/17/27/37` 通过 final class-specific gate 与 last-5 stability；goal rates 分别为 `0.372/0.365/0.411/0.370`。
+- Seed 47 稳定失败：两个 skills 都是 safe timeout，剩余 skill 为 hole/goal mixture；final safe/hole/goal matched rates 为 `1.000/0.799/0.000`，last-5 一直失败。
+- 预注册要求为至少 4/5，故 Phase 4D Plain Semantic gate 通过；failure seed 不被均值隐藏。
+- Outcome-aligned 5-seed mean：safe `1.000`、hole `0.958`、goal `0.304`。Goal mean 被 seed-47 的 0 明显拉低。
+
+联合重放最后一行对应 seed 47；第三列 assigned goal 无成功 sample，renderer 明确回退显示实际 safe outcome，顶部蓝条与 manifest 的 `assigned_outcome_found=false` 一致。
+
+![FrozenLake slippery semantic multi-seed replay](outputs/skill_discovery/frozenlake_slippery_training/frozenlake_slippery_semantic_multiseed_20260722_0710/multiseed_final_replay.png)
+
+> [结果]
+> 在相同 public graphical task 上，semantic trajectory outcome representation 从 deterministic 延伸到 stochastic dynamics；但仍有 1/5 symmetry collapse。Global occupancy entropy 不能作为通用修复，因为它在 seed 7 反而复制 rare-goal skills。
+
 ## Phase 5：图像与 VLM Metric
 
-状态：`等待小环境通过`
+状态：`Phase 5A 离线 visual probe 计划已冻结`
 
 在 Point-Cup/Pusher-Cup 上先比较：
 
@@ -920,6 +1028,18 @@ VLM 只离线编码关键帧或短 clip，并缓存 embedding，不放在每个 
 关键问题不是“VLM 能不能看出杯子”，而是它的距离排序是否满足：
 
 `different meaningful modes > same mode with nuisance variation`
+
+### Phase 5A：FrozenLake Cached Visual Probe
+
+先利用 Phase 4D 已审计的官方 renderer 与 DP policies 构造平衡数据，不训练 policy：
+
+1. 每个 outcome 采集 5 seeds x 128 条真实 stochastic trajectories；保存 start/middle/final frames、state/action sequence 和 outcome，DP policy 只用于 dataset generation。
+2. Train/audit 严格分 seed；比较 raw pixels、固定随机 projection、pretrained visual embedding、prompted vision-language scores 与 semantic oracle。
+3. 评价 balanced kNN、cross-seed retrieval、same-outcome trajectory nuisance invariance 和 rare goal representative recall。
+4. 先缓存所有 RGB 与 embedding，再做 metric；任何 foundation model 都不进入 env step loop。
+5. Oracle 与 raw/pixel 管线先通过后才下载/运行 pretrained encoder；若图像标签或 split 有误，不消耗 GPU。
+
+Phase 5A 第一 gate：平衡 RGB dataset、manifest 与 30 条随机视觉抽样一致；raw pixels/random projection/oracle 的离线结果可复现。完成后再选择一个公开 pretrained visual encoder，不同时比较多个大模型。
 
 ## Phase 6：迁移到 Hammer
 
@@ -1172,6 +1292,14 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - 结论：trajectory outcome representation 在本 public fixed map 有效；occupancy entropy 相对 plain semantic 没有额外收益。
 - 下一步：只增加 slippery dynamics，先计算 class-specific controllability ceilings，再定义训练 gate。
 
+### D-024：Slippery Gate 4/5，通过后转入离线视觉表示
+
+- 日期：2026-07-22
+- Control：DP goal ceiling 0.373；visit-decay balanced learner final 0.369 且 last-5 通过。
+- Methods：Raw seed 7 无 goal；Semantic seed 7 通过；Spread seed 7 复制 goal-like skills并缺 safe。
+- Multi-seed：Plain Semantic 4/5 通过，seed 47 稳定 symmetry collapse。
+- 决定：不调 spread weight 或失败 seed；进入 cached visual probe，先验证数据/像素/oracle，再使用一个 pretrained encoder。
+
 ## 实验日志
 
 ### 2026-07-22：项目启动
@@ -1332,3 +1460,14 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 > [方向变化]
 > 结论收窄为 semantic outcome representation 有效，不能声称 occupancy term 在该环境必要。下一步只审计 `is_slippery=true` 的 outcome 概率上界，不先套用 deterministic gate。
+
+### 2026-07-22：FrozenLake Slippery Gate 通过
+
+> [结果]
+> DP/Monte Carlo audit、balanced learner 收敛诊断、seed-7 objective comparison 与 Plain Semantic 5-seed runs 全部完成。Plain Semantic 4/5 通过；Raw 和 spread 的失败模式均由数值与画面确认。
+
+> [失败记录]
+> Seed 47 没有 goal skill；spread seed 7 复制 rare-goal skills并缺 safe。两者保留，不通过调 weight 或重跑 seed 消除。
+
+> [计划]
+> 下一阶段只生成平衡的 cached RGB trajectory dataset，先跑 raw pixels/random projection/oracle 离线 metric 与30条视觉抽样；数据 gate 后才选择一个 pretrained visual encoder。

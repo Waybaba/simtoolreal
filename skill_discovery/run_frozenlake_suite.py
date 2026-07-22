@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+from skill_discovery.frozenlake import FrozenLakeConfig
 from skill_discovery.summarize_frozenlake_runs import summarize_runs
 from skill_discovery.train_frozenlake_skills import (
     FrozenLakeTrainConfig,
@@ -24,6 +25,20 @@ def main() -> None:
     parser.add_argument("--seeds", type=int, nargs="+", default=(7, 17, 27, 37, 47))
     parser.add_argument("--episodes", type=int, default=30_000)
     parser.add_argument("--epsilon-decay-fraction", type=float, default=0.80)
+    parser.add_argument(
+        "--learning-rate-schedule",
+        choices=("constant", "visit_decay"),
+        default="constant",
+    )
+    parser.add_argument("--eval-interval", type=int, default=1_000)
+    parser.add_argument("--eval-episodes", type=int, default=32)
+    parser.add_argument("--slippery", action="store_true")
+    parser.add_argument(
+        "--outcome-rate-gates",
+        type=float,
+        nargs=3,
+        metavar=("SAFE", "HOLE", "GOAL"),
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=False)
@@ -36,7 +51,14 @@ def main() -> None:
                 objective=objective,
                 seed=seed,
                 episodes=args.episodes,
+                learning_rate_schedule=args.learning_rate_schedule,
                 epsilon_decay_fraction=args.epsilon_decay_fraction,
+                eval_interval=args.eval_interval,
+                eval_episodes_per_skill=args.eval_episodes,
+                outcome_rate_gates=tuple(args.outcome_rate_gates)
+                if args.outcome_rate_gates is not None
+                else None,
+                lake=FrozenLakeConfig(is_slippery=args.slippery),
             )
             run_dir = args.output_dir / f"{objective}_seed{seed}"
             output = train_run(config, run_dir)
@@ -59,6 +81,8 @@ def main() -> None:
         "seeds": list(args.seeds),
         "episodes": args.episodes,
         "epsilon_decay_fraction": args.epsilon_decay_fraction,
+        "learning_rate_schedule": args.learning_rate_schedule,
+        "slippery": args.slippery,
         "methods": {
             objective: {
                 "signal_gate_pass_count": summary["signal_gate_pass_count"],

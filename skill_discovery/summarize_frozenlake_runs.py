@@ -45,14 +45,41 @@ def summarize_runs(run_dirs: list[Path], output_dir: Path) -> dict[str, object]:
         replay = []
         y = row * (frame_size + gap)
         sheet[y : y + frame_size, :marker_width] = (40, 48, 54)
+        final = metrics["final_evaluation"]
         for skill in range(config.num_skills):
-            rollout = _rollout_policy(
-                q_table,
-                config,
-                skill,
-                seed=config.seed + 1_990_000 + skill,
-                render=True,
+            target_outcome = int(final["outcome_assignment"][skill])
+            rollout = None
+            fallback = None
+            matched_offset = -1
+            target_rate = float(final["matched_outcome_rates"][skill])
+            attempt_limit = (
+                1
+                if target_rate <= 0
+                else min(
+                    10_000,
+                    max(32, int(np.ceil(10.0 / target_rate))),
+                )
             )
+            for offset in range(attempt_limit):
+                candidate = _rollout_policy(
+                    q_table,
+                    config,
+                    skill,
+                    seed=config.seed
+                    + 1_990_000
+                    + skill * 100_000
+                    + offset,
+                    render=True,
+                )
+                if fallback is None:
+                    fallback = candidate
+                if int(candidate["outcome"]) == target_outcome:
+                    rollout = candidate
+                    matched_offset = offset
+                    break
+            if rollout is None:
+                assert fallback is not None
+                rollout = fallback
             frame = rollout.pop("frames")[-1]
             rows = np.linspace(0, frame.shape[0] - 1, frame_size).astype(np.int64)
             cols = np.linspace(0, frame.shape[1] - 1, frame_size).astype(np.int64)
@@ -64,11 +91,17 @@ def summarize_runs(run_dirs: list[Path], output_dir: Path) -> dict[str, object]:
             replay.append(
                 {
                     "skill": skill,
-                    "outcome": FROZENLAKE_OUTCOMES[outcome],
-                    **rollout,
+                    "assigned_outcome": FROZENLAKE_OUTCOMES[target_outcome],
+                    "actual_outcome": FROZENLAKE_OUTCOMES[outcome],
+                    "matched_seed_offset": matched_offset,
+                    "assigned_outcome_found": matched_offset >= 0,
+                    **{
+                        key: value
+                        for key, value in rollout.items()
+                        if key != "outcome"
+                    },
                 }
             )
-        final = metrics["final_evaluation"]
         matched_by_outcome = [0.0] * len(FROZENLAKE_OUTCOMES)
         for skill, outcome in enumerate(final["outcome_assignment"]):
             matched_by_outcome[outcome] = final["matched_outcome_rates"][skill]

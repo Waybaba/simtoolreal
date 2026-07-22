@@ -11,11 +11,27 @@ import numpy as np
 from skill_discovery.train_frozenlake_skills import (
     FrozenLakeIntrinsicReward,
     FrozenLakeTrainConfig,
+    _step_size,
     train_run,
 )
 
 
 class FrozenLakeTrainerTest(unittest.TestCase):
+    def test_visit_decay_step_size_decreases(self) -> None:
+        constant = FrozenLakeTrainConfig(learning_rate=0.15)
+        self.assertEqual(_step_size(constant, 100), 0.15)
+        decayed = FrozenLakeTrainConfig(learning_rate_schedule="visit_decay")
+        self.assertEqual(_step_size(decayed, 1), 1.0)
+        self.assertLess(_step_size(decayed, 100), _step_size(decayed, 10))
+
+    def test_class_specific_outcome_gates_are_resolved(self) -> None:
+        config = FrozenLakeTrainConfig(outcome_rate_gates=(0.9, 0.8, 0.3))
+        self.assertEqual(config.resolved_outcome_rate_gates(), (0.9, 0.8, 0.3))
+        default = FrozenLakeTrainConfig()
+        self.assertEqual(default.resolved_outcome_rate_gates(), (0.95,) * 3)
+        with self.assertRaises(ValueError):
+            FrozenLakeTrainConfig(outcome_rate_gates=(0.9, 0.8))
+
     def test_balanced_targets_are_seeded_and_reward_outcomes(self) -> None:
         config = FrozenLakeTrainConfig(
             objective="semantic_balanced",

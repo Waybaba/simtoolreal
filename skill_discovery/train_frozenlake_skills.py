@@ -30,6 +30,7 @@ class FrozenLakeTrainConfig:
     num_skills: int = 3
     episodes: int = 30_000
     learning_rate: float = 0.15
+    learning_rate_schedule: str = "constant"
     gamma: float = 0.99
     epsilon_start: float = 1.0
     epsilon_end: float = 0.0
@@ -40,6 +41,7 @@ class FrozenLakeTrainConfig:
     eval_interval: int = 1_000
     eval_episodes_per_skill: int = 32
     class_rate_gate: float = 0.95
+    outcome_rate_gates: tuple[float, float, float] | None = None
     lake: FrozenLakeConfig = FrozenLakeConfig()
 
     def __post_init__(self) -> None:
@@ -55,8 +57,20 @@ class FrozenLakeTrainConfig:
             raise ValueError("FrozenLake probe is fixed to three skills")
         if self.episodes <= 0 or self.eval_interval <= 0:
             raise ValueError("episode and evaluation intervals must be positive")
+        if self.learning_rate_schedule not in {"constant", "visit_decay"}:
+            raise ValueError("unknown learning-rate schedule")
         if not 0 < self.epsilon_decay_fraction <= 1:
             raise ValueError("epsilon decay fraction must be in (0, 1]")
+        if self.outcome_rate_gates is not None:
+            if len(self.outcome_rate_gates) != len(FROZENLAKE_OUTCOMES):
+                raise ValueError("one rate gate is required per outcome")
+            if any(not 0 <= gate <= 1 for gate in self.outcome_rate_gates):
+                raise ValueError("outcome rate gates must be in [0, 1]")
+
+    def resolved_outcome_rate_gates(self) -> tuple[float, float, float]:
+        if self.outcome_rate_gates is not None:
+            return tuple(self.outcome_rate_gates)
+        return (self.class_rate_gate,) * len(FROZENLAKE_OUTCOMES)
 
 
 class FrozenLakeIntrinsicReward:
@@ -149,6 +163,12 @@ def _epsilon(config: FrozenLakeTrainConfig, episode: int) -> float:
     )
 
 
+def _step_size(config: FrozenLakeTrainConfig, visit_count: int) -> float:
+    if config.learning_rate_schedule == "constant":
+        return config.learning_rate
+    return float(visit_count**-0.6)
+
+
 def _policy_action(q_values: np.ndarray, rng: np.random.Generator) -> int:
     maximum = q_values.max()
     candidates = np.flatnonzero(np.isclose(q_values, maximum))
@@ -235,6 +255,10 @@ def evaluate_q_table(
         native_success_rates.append(float(np.mean(successes)))
     assignment, matched_rates = _best_class_assignment(rates)
     goal_skill = assignment.index(2)
+    matched_by_outcome = np.zeros(len(FROZENLAKE_OUTCOMES), dtype=np.float64)
+    for skill, outcome in enumerate(assignment):
+        matched_by_outcome[outcome] = matched_rates[skill]
+    rate_gates = config.resolved_outcome_rate_gates()
     return {
         "episodes_per_skill": config.eval_episodes_per_skill,
         "outcome_rates": rates.tolist(),
@@ -245,13 +269,24 @@ def evaluate_q_table(
         "matched_outcome_rates": matched_rates,
         "matched_outcome_rate_mean": float(np.mean(matched_rates)),
         "matched_outcome_rate_min": float(np.min(matched_rates)),
+        "matched_rate_by_outcome": {
+            name: float(matched_by_outcome[index])
+            for index, name in enumerate(FROZENLAKE_OUTCOMES)
+        },
+        "outcome_rate_gates": {
+            name: float(rate_gates[index])
+            for index, name in enumerate(FROZENLAKE_OUTCOMES)
+        },
         "goal_skill": goal_skill,
         "goal_skill_native_success_rate": native_success_rates[goal_skill],
         "native_success_rates": native_success_rates,
         "mean_episode_steps": mean_steps,
         "specialization_gate_passed": bool(
-            min(matched_rates) >= config.class_rate_gate
-            and native_success_rates[goal_skill] >= config.class_rate_gate
+            all(
+                matched_by_outcome[index] >= rate_gates[index]
+                for index in range(len(FROZENLAKE_OUTCOMES))
+            )
+            and native_success_rates[goal_skill] >= rate_gates[2]
         ),
     }
 
@@ -292,6 +327,8 @@ def _write_rollout_audit(
     output_dir: Path,
     q_table: np.ndarray,
     config: FrozenLakeTrainConfig,
+    assigned_outcomes: list[int],
+    assigned_rates: list[float],
 ) -> list[dict[str, object]]:
     frame_size = 192
     columns = 4
@@ -309,13 +346,33 @@ def _write_rollout_audit(
     colors = ((48, 116, 173), (198, 72, 58), (42, 137, 94))
     manifest = []
     for skill in range(config.num_skills):
-        rollout = _rollout_policy(
-            q_table,
-            config,
-            skill,
-            seed=config.seed + 990_000 + skill,
-            render=True,
+        target_outcome = assigned_outcomes[skill]
+        rollout = None
+        fallback = None
+        matched_offset = -1
+        target_rate = assigned_rates[skill]
+        attempt_limit = (
+            1
+            if target_rate <= 0
+            else min(10_000, max(32, int(math.ceil(10.0 / target_rate))))
         )
+        for offset in range(attempt_limit):
+            candidate = _rollout_policy(
+                q_table,
+                config,
+                skill,
+                seed=config.seed + 990_000 + skill * 100_000 + offset,
+                render=True,
+            )
+            if fallback is None:
+                fallback = candidate
+            if int(candidate["outcome"]) == target_outcome:
+                rollout = candidate
+                matched_offset = offset
+                break
+        if rollout is None:
+            assert fallback is not None
+            rollout = fallback
         frames = rollout.pop("frames")
         indices = np.linspace(0, len(frames) - 1, columns).astype(np.int64)
         y = skill * (frame_size + gap)
@@ -331,8 +388,11 @@ def _write_rollout_audit(
         manifest.append(
             {
                 "skill": skill,
-                "outcome": FROZENLAKE_OUTCOMES[outcome],
-                **rollout,
+                "assigned_outcome": FROZENLAKE_OUTCOMES[target_outcome],
+                "actual_outcome": FROZENLAKE_OUTCOMES[outcome],
+                "matched_seed_offset": matched_offset,
+                "assigned_outcome_found": matched_offset >= 0,
+                **{key: value for key, value in rollout.items() if key != "outcome"},
             }
         )
     _write_png(output_dir / "policy_rollout_audit.png", sheet)
@@ -350,6 +410,7 @@ def train_run(
     output_dir.mkdir(parents=True, exist_ok=False)
     rng = np.random.default_rng(config.seed)
     q_table = rng.normal(0.0, 1.0e-4, size=(config.num_skills, 16, 4))
+    visit_counts = np.zeros_like(q_table, dtype=np.int64)
     reward_model = FrozenLakeIntrinsicReward(config)
     training_counts = np.zeros(
         (config.num_skills, len(FROZENLAKE_OUTCOMES)),
@@ -389,7 +450,12 @@ def train_run(
                         reward_sums[name] += parts[name]
                 else:
                     target = config.gamma * q_table[skill, int(next_state)].max()
-                q_table[skill, int(state), action] += config.learning_rate * (
+                visit_counts[skill, int(state), action] += 1
+                step_size = _step_size(
+                    config,
+                    int(visit_counts[skill, int(state), action]),
+                )
+                q_table[skill, int(state), action] += step_size * (
                     target - q_table[skill, int(state), action]
                 )
                 state = next_state
@@ -397,7 +463,7 @@ def train_run(
                 evaluation = evaluate_q_table(
                     q_table,
                     config,
-                    seed=config.seed + 100_000 + episode,
+                    seed=config.seed + 100_000,
                 )
                 evaluations.append({"episodes": episode + 1, **evaluation})
     finally:
@@ -413,7 +479,13 @@ def train_run(
         len(recent) >= 3
         and all(row["specialization_gate_passed"] for row in recent)
     )
-    manifest = _write_rollout_audit(output_dir, q_table, config)
+    manifest = _write_rollout_audit(
+        output_dir,
+        q_table,
+        config,
+        final_evaluation["outcome_assignment"],
+        final_evaluation["matched_outcome_rates"],
+    )
     output = {
         "config": asdict(config),
         "version": {"gymnasium": importlib.metadata.version("gymnasium")},
@@ -421,6 +493,11 @@ def train_run(
         "reward_model": reward_model.state_dict(),
         "training_outcome_counts": training_counts.tolist(),
         "reward_sums": reward_sums,
+        "visit_counts": {
+            "nonzero": int(np.count_nonzero(visit_counts)),
+            "maximum": int(visit_counts.max()),
+            "by_skill": visit_counts.sum(axis=(1, 2)).tolist(),
+        },
         "evaluations": evaluations,
         "final_evaluation": final_evaluation,
         "checkpoint_stability_passed": stability,
@@ -453,16 +530,35 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--episodes", type=int, default=30_000)
+    parser.add_argument(
+        "--learning-rate-schedule",
+        choices=("constant", "visit_decay"),
+        default="constant",
+    )
     parser.add_argument("--eval-interval", type=int, default=1_000)
+    parser.add_argument("--eval-episodes", type=int, default=32)
     parser.add_argument("--epsilon-decay-fraction", type=float, default=0.90)
+    parser.add_argument("--slippery", action="store_true")
+    parser.add_argument(
+        "--outcome-rate-gates",
+        type=float,
+        nargs=3,
+        metavar=("SAFE", "HOLE", "GOAL"),
+    )
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     config = FrozenLakeTrainConfig(
         objective=args.objective,
         seed=args.seed,
         episodes=args.episodes,
+        learning_rate_schedule=args.learning_rate_schedule,
         eval_interval=args.eval_interval,
+        eval_episodes_per_skill=args.eval_episodes,
         epsilon_decay_fraction=args.epsilon_decay_fraction,
+        outcome_rate_gates=tuple(args.outcome_rate_gates)
+        if args.outcome_rate_gates is not None
+        else None,
+        lake=FrozenLakeConfig(is_slippery=args.slippery),
     )
     run_id = (
         f"frozenlake_{config.objective}_seed{config.seed}_"
