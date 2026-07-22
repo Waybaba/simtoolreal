@@ -5,7 +5,7 @@
 >
 > 当前阶段：Phase 3 fixed-layout gate 已通过但 layout generalization 失败；Phase 4A 官方 MiniGrid 环境审计已通过，Phase 4B 正在定位长时序 PPO 的部署失败。
 >
-> 当前动作：Phase 5C seed-7 visual-cluster reward gate 已通过。下一步不重复跑等价 multi-seed，先处理 audit style shift 下 safe recall 仅 0.219 的 representation gap。
+> 当前动作：Phase 5E temporal-delta 16-style stress gate 已通过。下一步进入官方 FrozenLake 8x8 环境/DP 审计，再预注册 layout-scale transfer gate。
 
 ## 一眼看完整流程
 
@@ -1197,6 +1197,106 @@ Run：`frozenlake_slippery_visual_cluster_visit_decay_seed7_20260722_062028`
 > [计划]
 > 下一步针对 audit safe recall `0.219` 做 reference calibration：只在 frozen embeddings 上使用少量 train-style reference trajectories，不重训 encoder；先预注册 held-out audit gate，再决定是否值得迁移到更复杂图形环境。
 
+## Phase 5D：Trajectory Self-reference Style Calibration
+
+状态：`通过`
+
+### 诊断
+
+- Audit nuisance 对 held-out generation seed 固定施加 RGB scale/offset 和 2–3 pixel translation；seed 37/47 是两个互不相同的新 style。
+- DINO KMeans 在 seed 37/47 的 hole 与 goal 都是 `128/128` 正确；错误全部是 safe→goal。KMeans safe recall 为 `10/128` 与 `46/128`。
+- 全 train 1-NN 把 seed-47 safe 提高到 `116/128`，但 seed 37 仍只有 `15/128`，说明仅增加 exemplar 数量不能解决主要 domain shift。
+- 当前 trajectory embedding 等权拼接 start/middle/final；所有轨迹的 start 都是 state 0，与 outcome 无关，却携带完整 palette/translation style。它是一个可直接消除的 nuisance channel。
+
+### 预注册方法
+
+冻结 DINOv2-small、dataset、train seeds `7/17/27`、audit seeds `37/47`、KMeans seed 7、K=3、n-init 32，不读取 outcome label 生成表示或训练 clusters。只比较三个事先固定的表示：
+
+1. `absolute_3frame`：现有 normalized start+middle+final，作为原样 baseline。
+2. `middle_final`：删除共同 start，只拼接 normalized middle+final。
+3. `temporal_delta`：分别计算 normalized `(middle-start)` 与 `(final-start)`，再拼接并归一化；start 只作为每条轨迹自身的 style reference。
+
+Outcome labels 只在 KMeans 完成后做 permutation alignment 和 held-out evaluation。不开 embedding dimension、delta weight、K 或 classifier sweep。
+
+### Gate 与决策
+
+- 通过要求：audit aligned accuracy `>=0.84`，safe recall `>=0.50`，hole/goal recall 各 `>=0.95`，三个 audit clusters 均非空。
+- `0.84` 同时要求比现有 KMeans `0.740` 提高至少 0.10，并略高于全量 1-NN `0.837`；不能只靠换成 supervised nearest-neighbor 宣称修复。
+- 若两个变体都失败，完整记录并进入 paired nuisance-reference calibration：用独立 calibration styles 的同轨迹正对学习 style subspace，仍不接触 audit styles 或 outcome labels。
+- 若至少一个通过，先检查 seed-37/47 分项与 cluster composition，再决定是否构建对应的在线 visual reward；此阶段不增加环境或控制复杂度。
+
+### Phase 5D 结果：Temporal Delta 通过
+
+Run：`frozenlake_self_reference_20260722_063012`
+
+| Representation | Audit accuracy | Safe recall | Hole recall | Goal recall | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Absolute 3-frame | 0.740 | 0.219 | 1.000 | 1.000 | fail |
+| Middle+final | 0.740 | 0.219 | 1.000 | 1.000 | fail |
+| Temporal delta | **0.983** | **0.949** | **1.000** | **1.000** | **pass** |
+
+- Absolute baseline 与原 cache 最大逐元素差为 `0.0`，比较口径没有漂移。
+- Seed 37 accuracy 从 `0.693` 提升到 `0.966`，safe recall 从 `0.078` 提升到 `0.898`；seed 47 accuracy/三类 recall 均为 `1.000`。
+- Temporal-delta audit cluster sizes 为 `243/256/269`，三个 cluster 都非空且接近平衡。
+- 删除 start 本身完全没有改善；只有相对 start 的变化有效。这支持“轨迹变化消除共同 style”解释，而非低维度或少一帧的偶然收益。
+
+![FrozenLake trajectory self-reference comparison](outputs/skill_discovery/frozenlake_visual/frozenlake_self_reference_20260722_063012/self_reference_comparison.svg)
+
+> [结果]
+> 不训练 encoder、不使用 outcome label，只把绝对 DINO frames 改为相对自身起点的 temporal deltas，就修复了两种 held-out styles 的大部分 safe→goal 错误。由于只有两个 styles，下一步先做多 style stress test，不立即升级环境。
+
+## Phase 5E：16-style Frozen Encoder Stress Test
+
+状态：`通过`
+
+### 数据与方法
+
+- 固定 style seeds：`107,117,127,137,147,157,167,177,187,197,207,217,227,237,247,257`；它们与 train `7/17/27`、首次 audit `37/47` 均不重合。
+- 从原始 cached RGB 中按固定 seed 每 outcome 选 32 条，共 96 条 source trajectories；对每个新 style 独立施加同一族 RGB scale/offset 与 2–3 pixel translation，共编码 `16 x 96 x 3 = 4,608` frames。
+- DINOv2-small 权重冻结，使用 GPU 0；只比较 `absolute_3frame` 与已经选定的 `temporal_delta`。
+- 使用 Phase 5D 从原始 train split 学到的 KMeans centers 与 train alignment；不在 stress styles 上重新 fit、选择 center、调维度或调权重。
+- Outcome labels 只用于构造平衡 audit 和最终 evaluation，不进入 embedding、center 或 prediction。
+
+### Gate 与决策
+
+- Aggregate：accuracy `>=0.90`、safe recall `>=0.75`、hole/goal recall 各 `>=0.95`。
+- Per-style：至少 `14/16` 个新 styles 的 accuracy `>=0.84`，并完整报告最差 style 与 confusion。
+- 若通过，temporal delta 作为当前 visual trajectory metric，下一阶段增加图形 layout/task variation，而不是继续调 FrozenLake 风格参数。
+- 若失败，不筛掉坏 styles；转入预登记的 paired nuisance-reference subspace calibration，并以这 16 styles 作为冻结 audit，不再用它们调参。
+
+### Phase 5E 结果：通过，保留一个坏 Style
+
+Run：`frozenlake_style_stress_20260722_063353`
+
+| Representation | Accuracy | Safe | Hole | Goal | Styles >=0.84 | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Absolute 3-frame | 0.706 | 0.342 | 0.775 | 1.000 | 5/16 | fail |
+| Temporal delta | **0.952** | **0.879** | **0.980** | **0.998** | **15/16** | **pass** |
+
+- 冻结 DINOv2-small 在 GPU 0 编码 4,608 frames 用时 `12.38s`；没有训练 encoder 或在 stress styles 上重 fit centers。
+- Temporal delta 最差 style 是 seed 117，accuracy `0.729`：safe confusion 为 `6 correct / 9 hole / 17 goal`；真实 hole/goal 仍各 `32/32`。
+- Absolute 最差 style 187 把三类全部预测成 goal，accuracy `0.333`。Temporal delta 在同一 style 达到 `0.990`。
+- 16-style 样本图已人工检查：palette 与 translation 差异明显，agent、holes、goal 仍正常可见，没有空白帧或损坏画面。
+
+![FrozenLake 16-style sample](outputs/skill_discovery/frozenlake_visual/frozenlake_style_stress_20260722_063353/style_sample.png)
+
+![FrozenLake 16-style stress accuracy](outputs/skill_discovery/frozenlake_visual/frozenlake_style_stress_20260722_063353/style_accuracy.svg)
+
+> [结果]
+> 轨迹 self-reference 不只适配最初两个 audit styles：它在 16 个未见 style 中通过 15 个，并显著优于绝对帧表示。坏 style 117 表明它仍不是严格 style invariant，但已经足以停止 FrozenLake palette 调参并增加环境变化。
+
+## Phase 5F：Official FrozenLake 8x8 Layout-scale Transfer
+
+状态：`环境审计待运行，transfer gate 尚未冻结`
+
+下一层仍使用 Gymnasium 官方图形环境，不增加物理或机械臂控制。4x4→8x8 同时改变 grid layout、路径长度、对象屏幕尺度与可达概率，可以检验 temporal-delta 结论是否只依赖固定 4x4 画面。
+
+1. 先运行官方 `FrozenLake-v1 map_name=8x8` smoke、seed reproducibility、renderer 和 finite-horizon DP outcome ceiling；根据 ceiling 决定 horizon 与 class-specific gates。
+2. 只有 safe/hole/goal 都可由 scripted/DP policies 稳定采样，才生成小型 balanced RGB audit；首轮不训练 skill policy。
+3. 第一项 visual test 为冻结 4x4 temporal-delta centers 的 8x8 zero-shot transfer，不读取 8x8 outcome labels调整 centers。
+4. 若 zero-shot 失败，再在 8x8 train seeds 无标签 fit K=3，区分“4x4→8x8 center transfer failure”和“temporal-delta representation failure”；两项不可混为一个结论。
+5. DP ceiling、数据频率和视觉抽样出来前不写数值 gate，避免沿用不适合 8x8 长路径的 4x4 成功率。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
@@ -1477,6 +1577,13 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - 176 种 finite keys 全部形成 outcome 到 cluster 的一一映射；visual 与 semantic Q-table 完全相同。
 - 决定：不重复计算数学等价的 multi-seed；不把结果外推为跨 style 视觉理解。下一步用少量 frozen reference calibration 处理 audit safe recall 0.219。
 
+### D-028：Temporal Delta 通过 16-style Stress，停止 Palette 调参
+
+- 日期：2026-07-22
+- 两-style audit：accuracy 0.983、safe/hole/goal recall `0.949/1.000/1.000`。
+- 16-style stress：accuracy 0.952、recall `0.879/0.980/0.998`，15/16 styles 过线；style 117 明确失败。
+- 决定：保留坏 style，不做 nuisance seed/权重 sweep。下一步增加官方 8x8 layout 与画面尺度变化，先审计 DP controllability 再冻结 transfer gate。
+
 ## 实验日志
 
 ### 2026-07-22：项目启动
@@ -1681,3 +1788,17 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 > [计划]
 > 下一步冻结 DINO encoder，只用少量 train-style reference trajectories 校准距离/cluster，并在未参与校准的 audit seeds 上评价 safe/hole/goal recall；不先增加物理或控制复杂度。
+
+### 2026-07-22：Trajectory Self-reference 与 16-style Stress 通过
+
+> [方向变化]
+> 错误只集中在 safe→goal，而所有轨迹 start frame 都是无 outcome 信息的 state 0。由此外部 exemplar 计划先改成每条轨迹相对自身 start 的 temporal-delta 表示。
+
+> [结果]
+> 两-style accuracy 从 0.740 提升到 0.983；随后预登记的 16-style stress 达到 0.952，15/16 styles 通过。Absolute baseline 仅 0.706 和 5/16。
+
+> [失败记录]
+> Style 117 仅 0.729，26/32 safe 被分到 hole/goal。该 style 保留，不能声称完全 style invariant。
+
+> [计划]
+> 下一步只做官方 FrozenLake 8x8 环境、DP 和 renderer 审计。先测可控上界，再定义 4x4→8x8 temporal-delta zero-shot transfer gate。
