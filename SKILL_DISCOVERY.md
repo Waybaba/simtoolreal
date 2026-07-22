@@ -3221,7 +3221,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/visual_state_decoder_20260
 
 ## Phase 6C：Monotonic Local Visual Calibration
 
-状态：`预注册；未训练`
+状态：`已完成；velocity-p99 gate失败，未运行natural`
 
 这是continuous centroid decoder路线的最后一个候选。Data、splits、RGB centroids、targets及所有gates冻结为Phase 6B；只把global cubic Ridge替换为无knot超参数的local monotonic calibration，并加入official MountainCar minimum-position clipping对应的确定性velocity reset。
 
@@ -3232,6 +3232,18 @@ Run：`outputs/skill_discovery/mountaincar_continuous/visual_state_decoder_20260
 
 > [大计划]
 > 先做reference-only isotonic fit和balanced audit；通过前不实现natural adapter。所有长命令继续按约300秒阻塞等待。
+
+### Phase 6C 结果：Local Calibration 仍在 Velocity P99 停止
+
+Run：`outputs/skill_discovery/mountaincar_continuous/isotonic_state_decoder_20260722_174036`
+
+- Hash alignment及2,560-row reference-only fit通过；isotonic产生1,626个local thresholds，没有使用audit选择knots。
+- Position MAE/p99为`0.000376/0.001600`，显著优于global cubic且通过门槛；velocity MAE `0.000567`通过，但p99 `0.002080`比冻结`0.002000`高0.000080，最大误差0.0141来自少量clipping边界。
+- Decoded balanced accuracy/macro为`0.9961`，recalls为none `0.988`、left `0.996`、valley `1.000`、right `0.996`、goal `1.000`；classification gate完整通过。
+- Continuous regression gate仍为fail。按预注册不放宽80微单位、不调left-wall阈值、不换PCHIP，也不运行natural；continuous centroid decoder路线关闭。
+
+> [里程碑]
+> Local monotonic calibration证明RGB centroid几乎可以精确恢复状态，但极少数边界velocity误差仍超过严格lock。更重要的是当前balanced audit已被多次查看，后续模型不能继续把它当最终holdout；下一阶段应建立全新seed的balanced和natural lockbox。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3743,6 +3755,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：reference-only 2,560 scalar fit rows；hash alignment通过，balanced relation accuracy 0.9852。
 - 结果：position MAE/p99 0.00173/0.00477，velocity 0.000853/0.00323，四项均略高于预注册门槛。
 - 决定：regression gate失败即停止，不运行natural、不调degree/alpha。若继续，改用独立预注册的monotonic local calibration并处理official left-wall velocity reset。
+
+### D-048：Isotonic Decoder Balanced 0.996，但 Velocity P99 超标 0.00008
+
+- 日期：2026-07-22
+- 证据：position MAE/p99 0.000376/0.001600；velocity MAE/p99 0.000567/0.002080；balanced accuracy 0.9961。
+- 结果：classification与position gates通过，velocity p99略高于0.002，continuous final gate失败。
+- 决定：不放宽gate、不调wall threshold、不运行natural，关闭centroid decoder路线。当前audit转为development；下一可信评估必须使用预注册的新balanced/natural lockbox seeds。
 
 ## 实验日志
 
