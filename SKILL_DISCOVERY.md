@@ -2963,6 +2963,34 @@ Run：`outputs/skill_discovery/mountaincar_continuous/frame_pair_capacity_202607
 > [里程碑]
 > MountainCar frame-pair representation已经通过完整离线gate：RGB-derived car position与运动方向近乎精确，四类macro recall 0.996；generic DINO却完全漏掉native-goal。下一关键问题不再是“能否分四类”，而是“真实rollout中的none transitions会不会被强制误分类”。在回答前不接policy reward。
 
+## Phase 5ZW：Natural-rollout None/OOD Rejection
+
+状态：`预注册；未运行`
+
+### Frozen Deployment Rule
+
+- 冻结Phase 5ZV的median background、reference car-motion features、四类labels与Euclidean 1-NN，不重新生成balanced data。
+- 对每个reference sample，只在同class其余255个reference samples中计算最近邻squared distance。每class rejection threshold固定为该class所有leave-one-out最近邻距离的**最大值**；不乘margin、不看balanced audit或natural rollout labels。
+- Query先找全reference最近邻及其class；距离不超过该predicted class threshold才输出relation，否则输出`none`。Oracle state只用于完成后计算confusion，不能改变threshold或prediction。
+
+### Frozen Natural Rollouts
+
+- Energy audit：128 episodes，environment seeds从`5,100,000`顺序增加，固定`action=-1 if velocity<=0 else +1`直到native termination或999步。它保证自然成功轨迹覆盖，不作为learned policy。
+- Random audit：256 episodes，seeds从`6,100,000`增加，每条200步；独立RNG uniform actions `[-1,1]`。Native termination时结束，不用reset后的下一episode补足步数。
+- 每一步从official before/after RGB计算冻结car-motion feature，同时用state predicate标注四relations之一或`none`。报告energy/random各自5-class confusion、acceptance与false positives；保存每个oracle class和`none->goal`首个例子的联系表。
+
+### Gates
+
+- Combined natural data中四relations各至少100个positives，`none`至少10,000；否则coverage gate失败，不能用缺失class得到高分。
+- 四relations in-domain macro recall `>=0.95`，各class recall `>=0.90`且native-goal recall `>=0.95`。
+- Oracle none被任意relation接受的false-positive rate `<=0.10`；其中none误报native-goal `<=0.01`。四个predicted relations均非空。
+- 联系表人工确认accepted relations方向正确，none->goal若存在不能被隐藏。
+
+全部通过后才允许把rejected visual relation接入online reward。失败时唯一下一方案是预注册并采集显式`none` reference class；不调max-LOO threshold、不删near-boundary rollout或降低gate。
+
+> [大计划]
+> 四个CPU workers分摊episodes，按小batch提取RGB feature并立即丢弃frames，只保存confusion与少量联系表。运行期间按约300秒阻塞等待。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
