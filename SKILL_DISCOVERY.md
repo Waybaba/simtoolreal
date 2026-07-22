@@ -1794,7 +1794,7 @@ Run：`gotoobject_blockwise_spread_seed7_20260722_094708`
 
 ## Phase 5R：Reward-deficit Adaptive Allocation
 
-状态：`paired 15k policy diagnostic计划已冻结，尚未运行`
+状态：`paired 15k policy diagnostic完成；raw reward EMA调度失败`
 
 - 这是Phase 5Q失败后的单变量诊断，不重新学习reward matrix。直接读取其bootstrap calibrated matrix `[[1,-3.785,0],[-1.142,0,1],[0,1,-3.219]]`，fresh Q从零开始；Phase 5Q的5k discovery成本仍计入完整方法的20k总预算。
 - Policy budget固定15k episodes，组成3750个四episode cycles。每个cycle的前三次为CRN core：三个skills各在同一个layout seed运行一次；第4次在同一layout上给一个自适应选中的skill。每个skill因此至少获得3750次训练，另有3750次由scheduler分配。
@@ -1803,6 +1803,30 @@ Run：`gotoobject_blockwise_spread_seed7_20260722_094708`
 - Action RNG与scheduler RNG分离；global epsilon仍在15k policy episodes的前80%从1线性退火到0。Occupancy reward、`N^-0.6` update、horizon 64、state/actions与Phase 5Q相同。
 - 每3k total policy episodes评估512 common layouts/skill，共5个checkpoints；independent final另用512。Pass gate仍为far/adjacent/carried各 `>=0.90`且last-3全部通过。
 - 保存每个skill的core/extra episode counts、EMA trace、terminal reward sums、Q/visits、5个checkpoints、final、SVG、PNG与manifest。若失败，不调整EMA alpha或extra fraction；先判断是easy skill因core预算下降而退化，还是carried仍未获得足够改进。
+
+### 15k Adaptive-allocation 结果
+
+Run：`gotoobject_adaptive_deficit_seed7_20260722_095928`
+
+| Policy episodes | Far | Adjacent | Carried | Gate |
+| ---: | ---: | ---: | ---: | :---: |
+| 3k | 0.834 | 0.793 | 0.467 | fail |
+| 6k | 0.877 | 0.900 | 0.689 | fail |
+| 9k | 0.893 | 0.967 | 0.770 | fail |
+| 12k | 0.918 | 0.982 | 0.824 | fail |
+| 15k | 0.928 | 0.986 | 0.857 | fail |
+| Independent final | 0.924 | 0.969 | 0.807 | fail |
+
+- 每个skill固定得到3750 core episodes；3750 extra episodes却被分为far/carried/adjacent `2446/391/913`，总训练次数为 `6196/4141/4663`。真正较慢的carried反而得到最少extra，调度目标与需求相反。
+- 原因可由matrix直接解释：far row的第三名adjacent reward为 `-3.785`，carried row的第三名far仅为 `-1.142`。虽然top=1、runner-up=0已经对齐，罕见far-row adjacent失败仍会对raw EMA造成更大冲击，scheduler因而追逐reward尺度而不是学习难度。
+- 训练结束的terminal-reward EMA为 `far=0.919, carried=1.000, adjacent=1.000`，但held-out carried仅0.807。近期training-layout reward还会饱和并掩盖泛化缺口，不能替代independent evaluation。
+- 该schedule每4个episodes只引入一个新layout，而Phase 5Q每3个episodes引入一个；所以15k内的unique training layouts从5000降为3750。这是预注册设计中的额外generalization confound，carried下降不能全部解释为少859次训练。
+- Independent final和last-3均失败。人工审计仍确认carried代表轨迹真实pickup，floor objects `2->1`、`carrying=[ball, yellow]`；metric本身没有重新失效。
+
+![Adaptive reward-deficit 15k audit](outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_adaptive_deficit_seed7_20260722_095928/policy_rollout_audit.png)
+
+> [失败记录]
+> Raw calibrated reward不是跨skill可比的difficulty signal；runner-up/top归一化没有归一化第三名的负reward，也没有提供held-out generalization信息。停止调整EMA alpha和extra比例。若继续adaptive allocation，scheduler至少应使用reward rank而不是raw magnitude，并把layout diversity作为显式控制量。
 
 ## Phase 6：迁移到 Hammer
 
