@@ -2785,7 +2785,7 @@ Run：`outputs/skill_discovery/pusher_v5_environment/environment_audit_20260722_
 
 ## Phase 5ZS：MountainCarContinuous 2D Environment Gate
 
-状态：`预注册；未运行`
+状态：`完成；全部environment与reachability gates通过`
 
 ### 目的与冻结协议
 
@@ -2808,6 +2808,21 @@ Run：`outputs/skill_discovery/pusher_v5_environment/environment_audit_20260722_
 
 > [大计划]
 > 先实现可复用的官方dynamics/reward重算与双实例审计，再运行五个seeds。预计分钟级以内；若命令超过首个窗口，按约300秒阻塞等待，不做高频查询。
+
+### Phase 5ZS 结果
+
+Run：`outputs/skill_discovery/mountaincar_continuous/environment_audit_20260722_162641`
+
+- Gymnasium `1.3.0`、Pygame `2.5.7`、`SDL_VIDEODRIVER=dummy`。五种子各256-step random tape在两个新实例中重放；全部reset、states、rewards、flags和每条257个RGB hashes exact equal。
+- 官方dynamics独立重算最大误差为`5.96e-8`，低于`1e-7` gate；reward最大误差为0。API、reset范围和四个数值/可复现性gates全部通过。
+- 全部random frames严格为`400x600x3 uint8`，minimum pixel standard deviation为18.10，每条trajectory都有多个unique hashes。Pygame 2D renderer没有复现Pusher EGL的低位不确定性。
+- 固定energy controller在seeds `7/17/29/41/53`分别用`80/84/78/77/79`步native terminated，均未truncated；每条stage sequence严格为`reset -> left_momentum -> right_climb -> goal`。
+- 五行四阶段联系表人工通过：car位置随stage按预期移动，mountain与goal flag清楚可见。Final environment gate为pass。
+
+![MountainCarContinuous ordered stage audit](outputs/skill_discovery/mountaincar_continuous/environment_audit_20260722_162641/mountaincar_stage_contact_sheet.png)
+
+> [里程碑]
+> MountainCarContinuous建立了一个低成本、公开、连续控制且RGB bitwise可复现的下一实验底座。任务可达与renderer确定性已经分开验证；下一步只研究balanced visual stage dataset与representation，不需要先训练机械臂或调用VLM估计长程距离。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3241,6 +3256,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：五种子双实例、每实例100步；observations/rewards/flags全部exact equal，reward与COM重算误差0，联系表人工通过。
 - 失败：五个seed的RGB exact-hash gate全部失败；最大pixel差仅1/255，但预注册要求bitwise equality，不能在结果后放宽。
 - 决定：Pusher-v5 environment gate记为失败，不做oracle reachability、dataset、metric或policy training。下一候选应为公开、简单、2D continuous-control环境，并在任何run前冻结语义stage与渲染gate。
+
+### D-037：MountainCar 通过 2D Continuous Environment Gate
+
+- 日期：2026-07-22
+- 证据：五种子双实例random replay的state/reward/flags/RGB hashes全部exact equal；dynamics误差不超过`5.96e-8`，reward误差0。
+- Reachability：固定velocity-sign energy controller五个seeds均在84步内完成，四个ordered stages无跳跃；联系表人工通过。
+- 决定：保留MountainCar作为下一visual skill-discovery小环境。下一run只做balanced stage dataset与representation gate，不直接训练policy，不把scripted controller当作学习结果。
 
 ## 实验日志
 
