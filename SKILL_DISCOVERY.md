@@ -2174,6 +2174,19 @@ Run：`doorkey5_tabular_balanced_control_actionmask_optionterm_seed7_20260722_11
 > [里程碑]
 > DoorKey 5x5 control upper bound通过：state-changing official-action mask加target-reaching option termination，在不使用solver、macro action、imitation或native reward训练的条件下，使navigation、拿钥匙、开门、到终点四个固定options同时通过历史达到率与最终状态交付率。下一步可以把oracle reward rows替换为online discovery与bootstrap balanced assignment；若后续失败，应归因于发现/分配，而不再归因于基础控制接口。
 
+## Phase 5ZD：DoorKey Online Discovery + Frozen Option Policy
+
+状态：`seed 7完整实验协议已冻结，尚未运行`
+
+- 研究问题只改一个边界：Phase 5ZC的固定oracle reward rows由online semantic-spread bootstrap替代。环境仍为官方 `MiniGrid-DoorKey-5x5-v0`，compact state、五个official actions、state-changing mask、64-step horizon、tabular Q update和common-random layouts全部不变。
+- 总预算仍为20k episodes：前5k bootstrap按四skills轮转，使用furthest semantic-stage occupancy的decayed DIAYN posterior加global coverage reward；`pseudocount=2`、`semantic_decay=0.9995`、coverage weight=1。Bootstrap不使用target、option termination、native reward、scripted solver、macro或imitation。
+- 5k结束后冻结reward statistics。对4x4 raw reward matrix枚举24个全局一一assignment；不能用逐row argmax。Bootstrap replay中的真实stage changes建立direct transition graph，再取transitive ancestor closure。每个assigned target reward=1、observed ancestors=0、其余=-1。
+- Bootstrap structural gate要求raw matrix有限、assignment为四阶段permutation、key/door/goal各有至少25次支持的incoming stage transition且占该target incoming transitions至少1%。任何一项失败就停止，不运行policy phase，也不加bootstrap预算。
+- Policy Q从fresh table开始，先对5k bootstrap replay按冻结matrix reverse relabel一次。分到key或door的skill，其replay在首次达到target的transition处截断并标为option terminal；navigation保持64步，goal保持native terminal。随后训练15k fresh-layout policy episodes，assigned key/door第一次达到target立即返回。
+- Policy checkpoints固定为3k/6k/9k/13k/14k/15k，每次512 common layouts/skill；independent final另用512 layouts/skill。按bootstrap assignment同时报告4x4 outcome matrix、assigned furthest rates、assigned final-state rates和goal native success。
+- 完整gate要求四个assigned furthest rates、四个assigned final-state rates及goal native success各 `>=0.80`，且13k/14k/15k全部通过。接触表和manifest必须人工确认拿钥匙、门保持open和native goal；只达到历史事件不能替代最终状态交付。
+- Seed 7完整通过后才运行seeds 17/29；若seed 7失败，先按bootstrap coverage、assignment collision、replay truncation或post-bootstrap policy四类定位并保留正式失败，不进入IsaacLab。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
