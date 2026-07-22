@@ -2262,6 +2262,18 @@ Run：`doorkey8_tabular_balanced_control_actionmask_optionterm_seed7_20260722_12
 > [失败记录]
 > 8x8 oracle control未通过，所以按预注册规则停止8x8 online discovery，不增加episode budget、不调reward，也不把5x5的3/3外推到更大layout。下一诊断应改变可泛化的policy/state representation，而不是继续要求absolute-coordinate Q table记忆更多layouts。
 
+## Phase 5ZF：DoorKey 5x5 Masked Neural Control
+
+状态：`单变量neural control协议已冻结，尚未运行`
+
+- 先回到更简单的官方 `MiniGrid-DoorKey-5x5-v0`，只验证函数逼近control，不运行online discovery。训练使用Stable-Baselines3生态的MaskablePPO，避免新写PPO update；CPU运行，不占IsaacLab GPU。
+- 固定Phase 5ZC的四个identity oracle targets和rows：navigation `[1,-1,-1,-1]`、key `[0,1,-1,-1]`、door `[0,0,1,-1]`、goal `[0,0,0,1]`。Native reward只进入evaluation info。
+- Observation使用官方FullyObs object/color/state one-hot、agent direction和skill one-hot。Action space仍是官方7 actions，但mask只允许state-changing left/right/forward/pickup/toggle；drop/done恒为false，无效forward/pickup/toggle按真实grid state屏蔽。
+- Wrapper固定64-step horizon。Key/door首次达到assigned target立即option terminate；goal使用native termination；navigation运行完整horizon。Training/evaluation的mask、termination和reward contract完全一致。
+- 复用旧Phase 4B的`250k total timesteps`、8 envs、`n_steps=256`、batch 256、4 epochs、MLP `[256,256]`、learning rate `2.5e-4`、`ent_coef=0.01`、seed 7；因此不把结果差异归因于增加预算或网络。
+- Checkpoints固定50k/100k/150k/200k/250k，每次64 independent layouts/skill；final另256 layouts/skill。Gate要求四个fixed-target furthest rates、四个final-state rates和goal native success各 `>=0.80`，且150k/200k/250k全部通过；不允许best permutation替代oracle targets。
+- 保存policy、metrics、curves、action-mask统计和四skill contact sheet/manifest，并人工检查key carried、door final open、goal native success。若5x5通过，才单独冻结8x8 neural scale transfer；若失败，不调entropy、预算或reward，记录与旧PPO和tabular control的差异后停止该分支。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
