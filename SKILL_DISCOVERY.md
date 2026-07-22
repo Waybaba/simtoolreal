@@ -2336,6 +2336,17 @@ Run：`doorkey5_masked_ppo_control_seed7_20260722_122433`
 > [里程碑]
 > DoorKey第一次把oracle semantic stage向foundation visual metric推进：冻结DINO、无标签K=4、held-out layout groups上四类完整分离，尤其修复raw pixel methods对key interaction的系统性漏检。下一步可以设计finite-state embedding cache，但必须继续把cluster label alignment与online policy training隔离。
 
+## Phase 5ZH：Frozen Visual Metric on Policy-state Distribution
+
+状态：`zero-refit迁移协议已冻结，尚未生成数据`
+
+- Phase 5ZG只覆盖scripted solver的四个endpoint；online discovery会在任意agent pose查询metric。上线前先加载Phase 5ZC通过的5x5 oracle Q policies，在全新generation groups `57/67`上运行真实greedy trajectories，不训练policy。
+- 每group运行256个common layouts x四skills。对每个真实step记录该layout reset frame、current frame、furthest oracle stage、skill、step和env seed；每group/每stage用deterministic reservoir各抽128条，最终1024个balanced policy states。
+- Audit sampling可以读取oracle stage做平衡与最终评价，但不能改policy、DINO、KMeans centers或cluster mapping。Groups 57/67不与Phase 5ZG的train `7/17/27`、audit `37/47`重叠。
+- 冻结Phase 5ZG的 `facebook/dinov2-small` 与KMeans centers，不重新fit。主方法固定为 `dinov2_temporal_delta(reset,current)`，cluster→stage mapping沿用5ZG train split完成后的permutation；同时报告其他四个frozen representations作为诊断。
+- State-distribution gate要求主方法overall accuracy `>=0.85`、四stage recalls各 `>=0.75`、groups 57/67各accuracy `>=0.80`、四predicted clusters非空。人工contact sheet检查每stage至少三条不同pose/layout，尤其key carried和door open不能靠agent固定位置伪装。
+- 若通过，下一大计划才实现有限state visual lookup并替换online discovery的oracle stage；若失败，不重新fit centers、不加style augmentation、不改K，正式记录endpoint→policy-state distribution gap。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
