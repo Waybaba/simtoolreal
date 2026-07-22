@@ -1792,6 +1792,18 @@ Run：`gotoobject_blockwise_spread_seed7_20260722_094708`
 > [方向变化]
 > 下一步不继续扫描bootstrap比例或单纯延长预算。先设计一个只改变skill采样/更新分配的受控实验：让学习较慢或具有更长前置链的skill获得自适应训练机会，同时保持总environment budget、frozen matrix、CRN layouts和final gate不变。该实验需要在运行前冻结分配规则，并避免直接读取ground-truth stage标签来挑选skill。
 
+## Phase 5R：Reward-deficit Adaptive Allocation
+
+状态：`paired 15k policy diagnostic计划已冻结，尚未运行`
+
+- 这是Phase 5Q失败后的单变量诊断，不重新学习reward matrix。直接读取其bootstrap calibrated matrix `[[1,-3.785,0],[-1.142,0,1],[0,1,-3.219]]`，fresh Q从零开始；Phase 5Q的5k discovery成本仍计入完整方法的20k总预算。
+- Policy budget固定15k episodes，组成3750个四episode cycles。每个cycle的前三次为CRN core：三个skills各在同一个layout seed运行一次；第4次在同一layout上给一个自适应选中的skill。每个skill因此至少获得3750次训练，另有3750次由scheduler分配。
+- Scheduler只维护每个skill的terminal frozen reward EMA，`alpha=0.05`；每次core结束后选择EMA最低的skill获得extra episode。首个core后才允许选择，精确平局由独立seeded scheduler RNG打破；extra结果也更新EMA。
+- Scheduler不能读取semantic stage、environment object状态、evaluation success或ground-truth assignment。Row calibration令每个skill的top reward=1、runner-up=0，因此terminal reward deficit是算法内部可比较的学习信号。
+- Action RNG与scheduler RNG分离；global epsilon仍在15k policy episodes的前80%从1线性退火到0。Occupancy reward、`N^-0.6` update、horizon 64、state/actions与Phase 5Q相同。
+- 每3k total policy episodes评估512 common layouts/skill，共5个checkpoints；independent final另用512。Pass gate仍为far/adjacent/carried各 `>=0.90`且last-3全部通过。
+- 保存每个skill的core/extra episode counts、EMA trace、terminal reward sums、Q/visits、5个checkpoints、final、SVG、PNG与manifest。若失败，不调整EMA alpha或extra fraction；先判断是easy skill因core预算下降而退化，还是carried仍未获得足够改进。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
