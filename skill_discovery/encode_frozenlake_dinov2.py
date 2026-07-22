@@ -76,6 +76,7 @@ def encode_dataset(
     model_id: str = MODEL_ID,
     batch_size: int = 64,
     device: str = "cuda:0",
+    audit_nuisance: bool = True,
 ) -> dict[str, object]:
     import torch
     import transformers
@@ -91,10 +92,14 @@ def encode_dataset(
     data = np.load(dataset_path)
     outcomes = data["outcomes"].astype(np.int64)
     split = data["split"].astype(np.int64)
-    transformed_frames = apply_audit_nuisance(
-        data["frames"],
-        data["generation_seeds"],
-        split,
+    transformed_frames = (
+        apply_audit_nuisance(
+            data["frames"],
+            data["generation_seeds"],
+            split,
+        )
+        if audit_nuisance
+        else data["frames"]
     )
     flat_frames = transformed_frames.reshape(-1, *transformed_frames.shape[2:])
 
@@ -167,6 +172,7 @@ def encode_dataset(
         if torch_device.type == "cuda"
         else None,
         "batch_size": batch_size,
+        "audit_nuisance": audit_nuisance,
         "elapsed_seconds": elapsed,
         "frame_embedding_shape": list(frame_embeddings.shape),
         "trajectory_embedding_shape": list(trajectory_embeddings.shape),
@@ -199,6 +205,7 @@ def main() -> None:
     parser.add_argument("--model-id", default=MODEL_ID)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--no-audit-nuisance", action="store_true")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     output = encode_dataset(
@@ -207,6 +214,7 @@ def main() -> None:
         model_id=args.model_id,
         batch_size=args.batch_size,
         device=args.device,
+        audit_nuisance=not args.no_audit_nuisance,
     )
     print(
         json.dumps(

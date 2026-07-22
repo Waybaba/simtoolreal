@@ -5,7 +5,7 @@
 >
 > 当前阶段：Phase 3 fixed-layout gate 已通过但 layout generalization 失败；Phase 4A 官方 MiniGrid 环境审计已通过，Phase 4B 正在定位长时序 PPO 的部署失败。
 >
-> 当前动作：Phase 5E temporal-delta 16-style stress gate 已通过。下一步进入官方 FrozenLake 8x8 环境/DP 审计，再预注册 layout-scale transfer gate。
+> 当前动作：Phase 5G 8x8+unseen-style stress 失败，停止 FrozenLake style sweep。下一步设计不读取 state label 的 scale-aware tile/patch trajectory representation。
 
 ## 一眼看完整流程
 
@@ -1297,6 +1297,104 @@ Run：`frozenlake_style_stress_20260722_063353`
 4. 若 zero-shot 失败，再在 8x8 train seeds 无标签 fit K=3，区分“4x4→8x8 center transfer failure”和“temporal-delta representation failure”；两项不可混为一个结论。
 5. DP ceiling、数据频率和视觉抽样出来前不写数值 gate，避免沿用不适合 8x8 长路径的 4x4 成功率。
 
+### Phase 5F Environment Audit 预注册
+
+- Official config：`map_name=8x8`、`is_slippery=true`、`max_episode_steps=128`；探索性 DP 显示 goal ceiling `0.761`，safe/hole 为 1，故不使用更容易的 256-step horizon。
+- Seeds `7/17/27/37/47`；random 每 seed 2,000 episodes；每个 finite-horizon target policy 每 seed 512 episodes。
+- Gate：reset/render seed reproducible；64 states、4 actions、8x8 official map 与 `512x512x3` RGB frame；三 policy 的 Monte Carlo target rate 与 DP upper bound 绝对误差 `<=0.05`。
+- Render audit 必须各找到一条真实 safe timeout、hole terminal、goal terminal 轨迹；图片与 manifest 一致才允许生成 visual transfer dataset。
+- 本次只证明环境和数据可达性，不训练 policy、不运行 DINO，也不根据结果修改 128-step horizon。
+
+### Phase 5F Environment Audit 结果：通过
+
+Run：`frozenlake_8x8_environment_audit_20260722_063742`
+
+- Official map 为 64 states、4 actions、8x8，renderer `512x512x3`；reset/render 与 stochastic rollout seed 均可复现。
+- DP upper bounds 与 5-seed Monte Carlo：safe `1.000/1.000`、hole `1.000/1.000`、goal `0.7614/0.7633`；最大绝对误差 `0.0019`，远低于 0.05 gate。
+- Random 10,000 episodes 为 safe/hole/goal `66/9916/18`；goal 自然频率仅 `0.18%`，balanced outcome-policy dataset 是必要控制，不是挑方便样本。
+- Render manifest：safe trajectory 运行满 128 steps；hole 在 state 41 终止；goal 在 state 63 以 native reward 1 终止。人工画面与 manifest 一致。
+
+![FrozenLake 8x8 outcome-policy audit](outputs/skill_discovery/frozenlake_8x8/frozenlake_8x8_environment_audit_20260722_063742/optimal_outcome_policy_audit.png)
+
+### Phase 5F Visual Transfer 预注册
+
+- 使用同一 official 8x8/128-step config，seeds `7/17/27/37/47`，每 seed/每 outcome 接受 64 条，共 960 条 balanced trajectories；关键帧仍为 start/middle/final 并 resize 到 64x64。
+- 首轮所有 8x8 frames 保持原 renderer style，不施加 Phase 5E palette nuisance；本实验只测 layout 与 screen-scale transfer。
+- 冻结 DINOv2-small。Zero-shot 同时报告 4x4 `absolute_3frame` 与 `temporal_delta` centers，primary temporal-delta gate 为 overall accuracy `>=0.80` 且三 outcome recall 各 `>=0.70`。
+- 4x4 cluster→outcome mapping 沿用 Phase 5D train alignment；8x8 labels 只用于 balanced data acceptance 与最终 evaluation，不调整 centers/mapping。
+- 若 zero-shot 失败，才在 8x8 train seeds `7/17/27` 上无标签 fit K=3，并在 seeds `37/47` audit；representation gate 为 accuracy `>=0.84`、safe `>=0.50`、hole/goal 各 `>=0.95`、clusters 非空。
+- Zero-shot 通过表示 frozen metric 可跨 grid scale；只有 re-fit 通过表示 representation 可用但 centers 不可迁移；两者都失败才回到 frame crop/patch correspondence，不直接训练 skill policy。
+
+### Phase 5F Frozen-center Zero-shot 结果：失败
+
+Run：`frozenlake_4x4_to_8x8_transfer_20260722_064647`
+
+| Representation | Accuracy | Safe | Hole | Goal | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Absolute 3-frame | 0.333 | 0.000 | 1.000 | 0.000 | fail |
+| Temporal delta | 0.590 | 0.775 | 0.994 | **0.000** | fail |
+
+- Absolute centers 将全部 960 条 8x8 trajectories 判为 hole。
+- Temporal delta 保留大部分 safe/hole discrimination，但 320 条 goal 全部分到 safe/hole；五个 generation seeds 的 goal recall 都是 0，不是单 seed 波动。
+- 失败定位暂时是 frozen-center transfer gap，尚不能判断 temporal-delta representation 在 8x8 内是否失败。下一步只运行已经预注册的 8x8 train-only K=3 re-fit，不改 encoder、表示或 gate。
+
+### Phase 5F 8x8 Re-fit 结果：通过
+
+- Dataset：`frozenlake_8x8_visual_dataset_20260722_064010`
+- DINO cache：`frozenlake_8x8_dinov2_20260722_064509`
+- KMeans run：`frozenlake_8x8_self_reference_refit_20260722_064716`
+
+- Dataset 960 条，safe/hole/goal 各 320；train seeds `7/17/27`、audit `37/47`。Safe 全部 128 steps，hole/goal mean steps `38.4/74.2`，native reward 仅 goal 为 1。
+- Frozen DINO 编码 2,880 frames 用时 `7.83s`；原 renderer 下跨 seed 1-NN accuracy 为 1.0。
+- 8x8 train-only K=3 的 temporal-delta train/audit accuracy 均 1.0；audit 三类 recall 均 1.0，cluster sizes 严格 `128/128/128`，seed 37/47 各自也是 1.0。
+- Absolute 与 middle+final 在无 style shift 的 8x8 内也为 1.0，因此本结果证明“8x8 outcome 可分”，不能单独证明 temporal delta 必要；它与 Phase 5E style stress 联合解释。
+
+> [结果]
+> Temporal-delta representation 在 8x8 内仍完整保留 semantic outcome，但 4x4 learned centers 无法识别 8x8 goal。当前限制从“style sensitivity”收窄为“跨 grid/object screen scale 的 cluster center calibration”。
+
+## Phase 5G：8x8 Layout + Unseen Style Combined Stress
+
+状态：`失败`
+
+- 冻结 Phase 5F 的 8x8 train-only KMeans centers/mapping，不重新 fit。
+- 使用新 style seeds `307,317,327,337,347,357,367,377,387,397,407,417,427,437,447,457`；不复用 Phase 5E 的 107–257 styles。
+- 从 8x8 audit split 固定选每 outcome 32 条，仍为 16 x 96 x 3 = 4,608 frames；DINOv2-small 冻结、GPU 0。
+- 复用 Phase 5E gate：aggregate accuracy `>=0.90`、safe `>=0.75`、hole/goal 各 `>=0.95`，至少 14/16 styles accuracy `>=0.84`。
+- Absolute 作为 baseline，temporal delta 为 primary。若通过，停止 FrozenLake 实验并把下一方法问题定义为 scale-aware/object-centric center transfer；若失败，保留坏 styles，不做 style seed sweep。
+
+### Phase 5G 结果：失败
+
+Run：`frozenlake_8x8_style_stress_20260722_064847`
+
+| Representation | Accuracy | Safe | Hole | Goal | Styles >=0.84 | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Absolute 3-frame | 0.365 | 1.000 | 0.096 | 0.000 | 0/16 | fail |
+| Temporal delta | 0.782 | 0.977 | 1.000 | **0.369** | 4/16 | **fail** |
+
+- Temporal delta 在 styles 307/377/417 等可达到 `0.969/0.990/0.990`，但跨 style 波动大；5 个 styles 的 goal recall 为 0。
+- 最差 style 317 accuracy `0.573`：safe `23/32`、hole `32/32`、goal `0/32`；goal 全部被判为 hole。
+- 16-style 图像人工检查通过，颜色/平移变化明显，8x8 agent、holes、goal 均可见，没有损坏图解释失败。
+- 结论：temporal delta 能消除大量共同 style，但 global DINO CLS cluster center 对小尺度 goal 仍敏感；不能把 4x4 style success 外推到 layout+scale+style 组合。
+
+![FrozenLake 8x8 unseen-style sample](outputs/skill_discovery/frozenlake_8x8/frozenlake_8x8_style_stress_20260722_064847/style_sample.png)
+
+> [失败记录]
+> Phase 5G 按预注册 gate 失败。保留全部 16 styles，不增加 delta weight、center count 或选择性 style calibration；FrozenLake palette sweep 到此停止。
+
+## Phase 5H：Scale-aware Tile/Patch Representation
+
+状态：`方法设计中，尚未预注册运行`
+
+下一步仍保持无物理、图形环境，但处理 Phase 5F/G 暴露的真实问题：同一 semantic event 在 4x4 与 8x8 中占据不同屏幕尺度，global CLS centers 不可直接迁移。
+
+初步约束：
+
+1. 只从 RGB renderer 的规则网格边界切分 tiles/patches；不能读取 agent state、terminal state、outcome label 或 goal location选择 crop。
+2. 每个 tile 统一 resize 后用同一 frozen DINO 编码，再通过 permutation-invariant pooling 或 start→final tile-change matching 得到固定维 trajectory vector。
+3. 方法必须同时重跑 4x4→8x8 center zero-shot 与 8x8 unseen-style stress；不能只在失败集上 fit 后报告同集结果。
+4. 先做小型离线 representation probe，不训练 skill policy。具体 pooling、reference split 与 gates 在实现前写入本文件。
+5. 该方法利用规则 grid，只是 scale-aware 机制探针，不宣称可直接迁移到 Hammer；通过后还需要在非网格图形环境验证。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
@@ -1584,6 +1682,14 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - 16-style stress：accuracy 0.952、recall `0.879/0.980/0.998`，15/16 styles 过线；style 117 明确失败。
 - 决定：保留坏 style，不做 nuisance seed/权重 sweep。下一步增加官方 8x8 layout 与画面尺度变化，先审计 DP controllability 再冻结 transfer gate。
 
+### D-029：8x8 Representation 可分，但 Global Centers 不可跨 Scale+Style
+
+- 日期：2026-07-22
+- 8x8 DP/data gate 通过；4x4→8x8 temporal-delta frozen-center goal recall 0，zero-shot 失败。
+- 8x8 train-only K=3 audit accuracy/recall 全 1.0，证明 representation 在原 style 内可分。
+- 8x8+16 unseen styles 仅 0.782、4/16 styles 通过，goal recall 0.369；组合 gate 失败。
+- 决定：停止 FrozenLake style/center 调参。下一方法只研究 RGB-derived scale-aware tile/patch representation，禁止 state/outcome-guided crop。
+
 ## 实验日志
 
 ### 2026-07-22：项目启动
@@ -1802,3 +1908,14 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 > [计划]
 > 下一步只做官方 FrozenLake 8x8 环境、DP 和 renderer 审计。先测可控上界，再定义 4x4→8x8 temporal-delta zero-shot transfer gate。
+
+### 2026-07-22：FrozenLake 8x8 Scale Transfer 分层诊断
+
+> [结果]
+> Official 8x8 DP/Monte Carlo、balanced RGB data 与 render audit 全部通过。8x8 train-only temporal-delta K=3 在 held-out seeds 上三类 recall 均 1.0。
+
+> [失败记录]
+> 4x4 frozen centers 的 8x8 goal recall 为 0；换成 8x8 centers 后再叠加 16 个新 styles，goal recall 仅 0.369、4/16 styles 过线。图像正常，失败来自 scale+style representation gap。
+
+> [方向变化]
+> 不再扩展 FrozenLake palette/center sweep。下一步从 RGB grid 自动切 tile 并统一尺度，探索 patch-level temporal change；禁止用 state/outcome 选择 object crop。

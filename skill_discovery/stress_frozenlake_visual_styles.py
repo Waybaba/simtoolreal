@@ -221,7 +221,10 @@ def run_style_stress(
     model_id: str = "facebook/dinov2-small",
     batch_size: int = 64,
     device: str = "cuda:0",
+    style_seeds: tuple[int, ...] = STYLE_SEEDS,
 ) -> dict[str, object]:
+    if len(style_seeds) != 16 or len(set(style_seeds)) != 16:
+        raise ValueError("style stress requires exactly 16 distinct seeds")
     output_dir.mkdir(parents=True, exist_ok=False)
     data = np.load(dataset_path)
     outcomes = data["outcomes"].astype(np.int64)
@@ -233,7 +236,7 @@ def run_style_stress(
         seed=50_507,
     )
     source_outcomes = outcomes[source_indices]
-    styled = build_styled_trajectories(data["frames"][source_indices], STYLE_SEEDS)
+    styled = build_styled_trajectories(data["frames"][source_indices], style_seeds)
     flat_frames = styled.reshape(-1, *styled.shape[3:])
     frame_embeddings, encoder = _encode_frames(
         flat_frames,
@@ -241,7 +244,7 @@ def run_style_stress(
         batch_size=batch_size,
         device=device,
     )
-    trajectory_embeddings = frame_embeddings.reshape(len(STYLE_SEEDS), 96, 3, -1)
+    trajectory_embeddings = frame_embeddings.reshape(len(style_seeds), 96, 3, -1)
     calibration_metrics = json.loads(calibration_metrics_path.read_text())
     calibration_clusters = np.load(calibration_clusters_path)
     methods = {}
@@ -260,15 +263,15 @@ def run_style_stress(
         aligned = _aligned_predictions(
             clusters,
             calibration_metrics["methods"][name]["cluster_to_outcome"],
-        ).reshape(len(STYLE_SEEDS), -1)
-        methods[name] = evaluate_predictions(aligned, source_outcomes, STYLE_SEEDS)
+        ).reshape(len(style_seeds), -1)
+        methods[name] = evaluate_predictions(aligned, source_outcomes, style_seeds)
         predictions[name] = aligned
 
     np.savez_compressed(
         output_dir / "stress_embeddings.npz",
         frame_embeddings=frame_embeddings,
         source_indices=source_indices,
-        style_seeds=np.asarray(STYLE_SEEDS),
+        style_seeds=np.asarray(style_seeds),
         **{f"{name}_predictions": value for name, value in predictions.items()},
     )
     style_image = output_dir / "style_sample.png"
@@ -280,13 +283,13 @@ def run_style_stress(
         "calibration_metrics": str(calibration_metrics_path.resolve()),
         "calibration_clusters": str(calibration_clusters_path.resolve()),
         "model_id": model_id,
-        "style_seeds": list(STYLE_SEEDS),
+        "style_seeds": list(style_seeds),
         "source_selection": {
             "seed": 50_507,
             "count_per_outcome": 32,
             "source_indices": source_indices.tolist(),
         },
-        "trajectory_count": int(len(STYLE_SEEDS) * len(source_indices)),
+        "trajectory_count": int(len(style_seeds) * len(source_indices)),
         "frame_count": int(len(flat_frames)),
         "encoder": encoder,
         "gate": {
@@ -315,6 +318,7 @@ def main() -> None:
     parser.add_argument("--model-id", default="facebook/dinov2-small")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--style-seeds", type=int, nargs=16, default=STYLE_SEEDS)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     output = run_style_stress(
@@ -325,6 +329,7 @@ def main() -> None:
         model_id=args.model_id,
         batch_size=args.batch_size,
         device=args.device,
+        style_seeds=tuple(args.style_seeds),
     )
     print(
         json.dumps(

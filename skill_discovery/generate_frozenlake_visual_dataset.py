@@ -262,14 +262,24 @@ def main() -> None:
     parser.add_argument("--seeds", type=int, nargs="+", default=(7, 17, 27, 37, 47))
     parser.add_argument("--trajectories-per-outcome-per-seed", type=int, default=128)
     parser.add_argument("--image-size", type=int, default=64)
+    parser.add_argument("--map-name", default="4x4")
+    parser.add_argument("--max-episode-steps", type=int, default=32)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     config = FrozenLakeVisualDatasetConfig(
         seeds=tuple(args.seeds),
         trajectories_per_outcome_per_seed=args.trajectories_per_outcome_per_seed,
         image_size=args.image_size,
+        lake=FrozenLakeConfig(
+            map_name=args.map_name,
+            is_slippery=True,
+            max_episode_steps=args.max_episode_steps,
+        ),
     )
-    run_id = f"frozenlake_visual_dataset_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_id = (
+        f"frozenlake_{config.lake.map_name}_visual_dataset_"
+        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
     output_dir = args.output_dir or Path(
         "outputs/skill_discovery/frozenlake_visual"
     ) / run_id

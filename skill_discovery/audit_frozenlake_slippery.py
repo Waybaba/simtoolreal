@@ -24,6 +24,31 @@ from skill_discovery.frozenlake_slippery import (
 from skill_discovery.generate_point_cup_dataset import _write_png
 
 
+def _environment_smoke(
+    config: FrozenLakeConfig,
+    seed: int,
+) -> dict[str, object]:
+    env = make_frozenlake(config, render_mode="rgb_array")
+    try:
+        first_state, _ = env.reset(seed=seed)
+        first_frame = env.render()
+        second_state, _ = env.reset(seed=seed)
+        second_frame = env.render()
+        return {
+            "state_count": int(env.observation_space.n),
+            "action_count": int(env.action_space.n),
+            "map_shape": list(env.unwrapped.desc.shape),
+            "map_rows": [row.tobytes().decode("ascii") for row in env.unwrapped.desc],
+            "frame_shape": list(first_frame.shape),
+            "seed_reproducible": bool(
+                int(first_state) == int(second_state)
+                and np.array_equal(first_frame, second_frame)
+            ),
+        }
+    finally:
+        env.close()
+
+
 def _random_reachability(
     config: FrozenLakeConfig,
     seeds: list[int],
@@ -175,11 +200,18 @@ def main() -> None:
     parser.add_argument("--random-episodes-per-seed", type=int, default=2_000)
     parser.add_argument("--policy-episodes-per-seed", type=int, default=512)
     parser.add_argument("--bound-tolerance", type=float, default=0.05)
+    parser.add_argument("--map-name", default="4x4")
+    parser.add_argument("--max-episode-steps", type=int, default=32)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
 
-    config = FrozenLakeConfig(is_slippery=True)
+    config = FrozenLakeConfig(
+        map_name=args.map_name,
+        is_slippery=True,
+        max_episode_steps=args.max_episode_steps,
+    )
     seeds = list(args.seeds)
+    environment = _environment_smoke(config, seeds[0])
     policies = [
         finite_horizon_outcome_policy(config, target)
         for target in range(len(FROZENLAKE_OUTCOMES))
@@ -202,7 +234,10 @@ def main() -> None:
     second = rollout_outcome_policy(config, policies[2], seed=987_654)
     seed_reproducible = first["states"] == second["states"]
 
-    run_id = f"frozenlake_slippery_audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_id = (
+        f"frozenlake_{config.map_name}_slippery_audit_"
+        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
     output_dir = args.output_dir or Path(
         "outputs/skill_discovery/frozenlake_slippery"
     ) / run_id
@@ -214,7 +249,8 @@ def main() -> None:
         axis=0,
     )
     passed = bool(
-        seed_reproducible
+        environment["seed_reproducible"]
+        and seed_reproducible
         and all(
             audit["absolute_bound_error"] <= args.bound_tolerance
             for audit in policy_audits
@@ -226,6 +262,7 @@ def main() -> None:
     output = {
         "run_id": run_id,
         "config": asdict(config),
+        "environment": environment,
         "seed_reproducible": seed_reproducible,
         "seeds": seeds,
         "random": {
@@ -249,6 +286,7 @@ def main() -> None:
             {
                 "summary": str(summary_path.resolve()),
                 "image": output["image"],
+                "environment": environment,
                 "seed_reproducible": seed_reproducible,
                 "random_total_rates": output["random"]["total_rates"],
                 "policy_rates": [

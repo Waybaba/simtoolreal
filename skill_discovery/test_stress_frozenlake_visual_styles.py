@@ -9,6 +9,7 @@ import numpy as np
 from skill_discovery.stress_frozenlake_visual_styles import (
     build_styled_trajectories,
     evaluate_predictions,
+    run_style_stress,
     select_balanced_sources,
 )
 
@@ -49,6 +50,16 @@ class FrozenLakeStyleStressTest(unittest.TestCase):
         failing = evaluate_predictions(predictions, outcomes, tuple(range(16)))
         self.assertFalse(failing["gate_passed"])
         self.assertEqual(failing["styles_passing_0_84"], 13)
+
+    def test_run_rejects_nonstandard_style_seed_count_before_io(self) -> None:
+        with self.assertRaises(ValueError):
+            run_style_stress(
+                None,
+                None,
+                None,
+                None,
+                style_seeds=(1, 2),
+            )
 
 
 if __name__ == "__main__":
