@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,11 +14,36 @@ from skill_discovery.train_minigrid_gotoobject_skills import (
     _learning_rate,
     _transition_reward,
     compact_relation_key,
+    frozen_reward_matrix_from_metrics,
     train_run,
 )
 
 
 class GoToObjectSkillTrainerTest(unittest.TestCase):
+    def test_frozen_reward_matrix_uses_source_formula(self) -> None:
+        metrics = {
+            "config": {"semantic_coverage_weight": 1.0},
+            "reward_model": {
+                "objective": "semantic_spread",
+                "semantic_counts": [
+                    [8.0, 1.0, 1.0],
+                    [1.0, 4.0, 1.0],
+                    [1.0, 1.0, 2.0],
+                ],
+            },
+        }
+        matrix = frozen_reward_matrix_from_metrics(metrics)
+        expected = math.log(3 * 8 / 10) - math.log(3 * 10 / 20)
+        self.assertAlmostEqual(matrix[0][0], expected)
+        config = GoToObjectTrainConfig(
+            objective="frozen_matrix",
+            frozen_reward_matrix=matrix,
+            episodes=1,
+        )
+        reward = GoToObjectReward(config)
+        value, _ = reward.reward(skill=0, stage=0)
+        self.assertAlmostEqual(value, expected)
+
     def test_learning_rate_modes(self) -> None:
         visit_config = GoToObjectTrainConfig(episodes=1)
         self.assertAlmostEqual(_learning_rate(visit_config, 4.0), 4.0**-0.6)

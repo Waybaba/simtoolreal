@@ -29,6 +29,8 @@ RelationKey = tuple[int, int, int, int, int, int, int, int]
 @dataclass(frozen=True)
 class GoToObjectTrainConfig:
     objective: str = "semantic_balanced"
+    frozen_reward_matrix: tuple[tuple[float, ...], ...] | None = None
+    frozen_reward_source: str | None = None
     reward_timing: str = "exact_terminal"
     seed: int = 7
     num_skills: int = 3
@@ -54,8 +56,17 @@ class GoToObjectTrainConfig:
             "semantic",
             "semantic_spread",
             "semantic_balanced",
+            "frozen_matrix",
         }:
             raise ValueError("unknown objective")
+        if self.objective == "frozen_matrix":
+            matrix = np.asarray(self.frozen_reward_matrix, dtype=np.float64)
+            if matrix.shape != (self.num_skills, len(GOTOOBJECT_STAGES)):
+                raise ValueError("frozen reward matrix must have shape (3, 3)")
+            if not np.isfinite(matrix).all():
+                raise ValueError("frozen reward matrix must be finite")
+        elif self.frozen_reward_matrix is not None:
+            raise ValueError("frozen reward matrix requires frozen_matrix objective")
         if self.reward_timing not in {"exact_terminal", "occupancy"}:
             raise ValueError("unknown reward timing")
         if self.learning_rate_mode not in {"visit_power", "constant"}:
@@ -112,6 +123,10 @@ class GoToObjectReward:
         self.stage_counts[stage] += 1
         if self.config.objective == "random":
             return 0.0, {"diayn_reward": 0.0, "coverage_reward": 0.0}
+        if self.config.objective == "frozen_matrix":
+            assert self.config.frozen_reward_matrix is not None
+            value = float(self.config.frozen_reward_matrix[skill][stage])
+            return value, {"diayn_reward": value, "coverage_reward": 0.0}
         if self.config.objective == "semantic_balanced":
             value = float(stage == self.balanced_targets[skill])
             return value, {"diayn_reward": value, "coverage_reward": 0.0}
@@ -141,7 +156,32 @@ class GoToObjectReward:
             "balanced_targets": self.balanced_targets.tolist()
             if self.config.objective == "semantic_balanced"
             else None,
+            "frozen_reward_matrix": self.config.frozen_reward_matrix,
+            "frozen_reward_source": self.config.frozen_reward_source,
         }
+
+
+def frozen_reward_matrix_from_metrics(
+    metrics: dict[str, object],
+) -> tuple[tuple[float, ...], ...]:
+    config = metrics["config"]
+    reward_model = metrics["reward_model"]
+    if not isinstance(config, dict) or not isinstance(reward_model, dict):
+        raise ValueError("source metrics config and reward_model must be mappings")
+    objective = reward_model["objective"]
+    if objective not in {"semantic", "semantic_spread"}:
+        raise ValueError("frozen reward source must be semantic or semantic_spread")
+    counts = np.asarray(reward_model["semantic_counts"], dtype=np.float64)
+    if counts.shape != (3, 3) or not np.isfinite(counts).all() or (counts <= 0).any():
+        raise ValueError("source semantic counts must be a finite positive 3x3 matrix")
+    totals = counts.sum(axis=0)
+    posterior = counts / totals[None, :]
+    reward = np.log(np.maximum(posterior * 3, 1.0e-8))
+    if objective == "semantic_spread":
+        probabilities = totals / totals.sum()
+        coverage = -np.log(np.maximum(3 * probabilities, 1.0e-8))
+        reward += float(config["semantic_coverage_weight"]) * coverage[None, :]
+    return tuple(tuple(float(value) for value in row) for row in reward)
 
 
 def _epsilon(config: GoToObjectTrainConfig, episode: int) -> float:
@@ -519,9 +559,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--objective",
-        choices=("random", "semantic", "semantic_spread", "semantic_balanced"),
+        choices=(
+            "random",
+            "semantic",
+            "semantic_spread",
+            "semantic_balanced",
+            "frozen_matrix",
+        ),
         default="semantic_balanced",
     )
+    parser.add_argument("--frozen-reward-metrics", type=Path)
     parser.add_argument(
         "--reward-timing",
         choices=("exact_terminal", "occupancy"),
@@ -541,8 +588,22 @@ def main() -> None:
     parser.add_argument("--stability-checkpoints", type=int, default=5)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    frozen_matrix = None
+    frozen_source = None
+    if args.objective == "frozen_matrix":
+        if args.frozen_reward_metrics is None:
+            parser.error("frozen_matrix requires --frozen-reward-metrics")
+        source_metrics = json.loads(
+            args.frozen_reward_metrics.read_text(encoding="utf-8")
+        )
+        frozen_matrix = frozen_reward_matrix_from_metrics(source_metrics)
+        frozen_source = str(args.frozen_reward_metrics.resolve())
+    elif args.frozen_reward_metrics is not None:
+        parser.error("--frozen-reward-metrics requires frozen_matrix objective")
     config = GoToObjectTrainConfig(
         objective=args.objective,
+        frozen_reward_matrix=frozen_matrix,
+        frozen_reward_source=frozen_source,
         reward_timing=args.reward_timing,
         seed=args.seed,
         episodes=args.episodes,

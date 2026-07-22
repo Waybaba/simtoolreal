@@ -1647,12 +1647,36 @@ Run：`gotoobject_balanced_occupancy_seed7_formal_20260722_080420`
 
 ## Phase 5M：Constant-step Online-reward Diagnostic
 
-状态：`20k单变量干预计划已冻结，尚未运行`
+状态：`20k单变量干预完成，失败；constant step不能解决online co-adaptation`
 
 - 只重跑`semantic`和`semantic_spread`；random negative control不重复。
 - 固定Phase 5L的environment、occupancy reward、online counts/decay、state、actions、seed、20k budget、epsilon和evaluation。唯一变化是Q update step size从每个state-action visit的 `N^-0.6` 改为constant `alpha=0.1`，让values能跟踪仍在变化的online reward。
 - 两组可并行。门控不变：independent-final far/adjacent/carried各 `>=0.90`，且last-3 checkpoints全部通过。
 - 若通过者存在，再晋级100k formal；若两者都失败，不扫描alpha，也不加预算，检查Q/reward scale与posterior-reward consistency。
+
+### 20k Constant-step 结果
+
+| Objective | Far | Adjacent | Carried | Min stage | Gate |
+| --- | ---: | ---: | ---: | ---: | :---: |
+| Semantic constant-0.1 | 0.813 | 0.648 | 0.109 | 0.109 | fail |
+| Spread constant-0.1 | 0.611 | 0.580 | 0.209 | 0.209 | fail |
+
+- Runs：`gotoobject_semantic_occupancy_constant01_seed7_diagnostic_20260722_085207`与`gotoobject_semantic_spread_occupancy_constant01_seed7_diagnostic_20260722_085215`。两组均完整运行20k。
+- 两组都比原`N^-0.6`版本更差，不继续扫描alpha。
+- Posterior-reward consistency审计显示局部lag：semantic skill0的当前reward更偏carried，但greedy policy仍有 `0.813` far；spread skill1当前reward强烈偏carried，但policy仍有 `0.686` far。
+- Constant-step Q values的大部分分位数接近0，但保留少量大尖峰；spread某skill最大Q约 `69.8`。短暂online reward高值会写入局部state-action，而discriminator assignment随后继续漂移。
+
+> [失败记录]
+> Constant alpha没有解决问题，说明Phase 5L不只是衰减步长过早冻结。主要矛盾是policy与online discriminator同时共适应、assignment漂移；下一步先冻结reward landscape，隔离其可控性。
+
+## Phase 5N：Frozen Discovered-reward Matrix Diagnostic
+
+状态：`20k两阶段诊断计划已冻结，尚未运行`
+
+- 分别读取Phase 5L plain semantic与semantic-spread run的最终decayed semantic counts，按各自原公式计算固定的3x3 `reward(skill, stage)` matrix。
+- 冻结matrix后从空Q table重新训练；使用occupancy timing、原`N^-0.6` learning rate、seed 7、20k episodes、eval every2k、512 layouts/skill与last-3。环境、state、actions和evaluation不变。
+- 这是diagnostic，不宣称为完整discovery algorithm：它回答最终学出的reward landscape本身能否支持三种技能，唯一移除的变量是online policy/discriminator co-adaptation。
+- 两个matrix各自门控仍为independent-final far/adjacent/carried `>=0.90`且last-3全部通过。若通过，下一算法方向是block-wise freeze/update或EM-style交替；若失败，先处理reward scale/contrast，不进行训练预算或alpha sweep。
 
 ## Phase 6：迁移到 Hammer
 
