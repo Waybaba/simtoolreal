@@ -3185,6 +3185,28 @@ Run：`outputs/skill_discovery/mountaincar_continuous/visual_tree_rollout_202607
 > [里程碑]
 > Learned visual boundary基本解决了灾难性的reward假阳性，同时goal完全安全；剩余障碍是跨rollout分布的relation recall。下一metric应直接校准RGB motion到连续position/velocity，再应用冻结语义阈值，而不是继续调离散tree。
 
+## Phase 6B：Reference-only Visual State Calibration
+
+状态：`预注册；未训练`
+
+Phase 6B继续冻结Phase 5ZZ五类data、splits、median background与`x_before/x_after` RGB centroids，但不直接学习离散class。Reference state只作为训练监督，把单帧visual x映射为physical position；部署与audit prediction只消费RGB-derived centroids，不读取state/action/termination。
+
+### Frozen Decoder 与 Gates
+
+- 将1,280个reference pairs的before/after视觉x合并为2,560个scalar training rows，对应targets为official previous/next position。模型固定`PolynomialFeatures(degree=3, include_bias=False)`加`Ridge(alpha=1e-8, fit_intercept=True, solver="svd")`；不标准化、不做CV或degree/alpha sweep。
+- 同一position decoder分别预测`position_t/position_t+1`，visual velocity固定为两者之差，不另训velocity model。Audit regression gate：before+after position MAE `<=0.0015`、absolute-error p99 `<=0.0040`；next-velocity MAE `<=0.00075`、p99 `<=0.0020`。
+- 关系规则完全复用oracle数值边界但作用于decoded values：left `x in [-1.15,-0.75], v<=-0.005`；valley `x in (-0.75,0), v>=0.005`；right `x in [0,0.45), v>=0.005`；goal `x>=0.45, v>=0`；其余none。Goal不读取environment termination。
+- Regression gate通过后，在冻结balanced audit要求accuracy/macro各`>=0.98`、五类recall各`>=0.95`、五个predicted classes非空。保存decoder、coefficients、连续误差分布及5x5 confusion。
+
+### Paired Natural Gate
+
+- Balanced通过才实现RGB-only rollout adapter；Phase 5ZW的61,382 transitions、seeds、workers、coverage及natural gates全部不变。
+- 不允许position/velocity offset、predicate margin、confidence rejection或natural calibration。Natural labels只计算最终confusion。
+- Regression或balanced失败即关闭该decoder；natural失败也不调degree/alpha/boundaries。只有完整通过才进入visual reward control smoke。
+
+> [大计划]
+> 先实现hash-aligned target loader、reference-only decoder和balanced audit。通过前不实现natural adapter；长命令按约300秒阻塞等待。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
