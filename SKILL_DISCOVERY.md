@@ -2143,12 +2143,36 @@ Artifact：`doorkey5_tabular_balanced_control_actionmask_seed7_20260722_112434/f
 
 ## Phase 5ZC：DoorKey Target-reaching Option Termination
 
-状态：`20k单变量control diagnostic计划已冻结，尚未运行`
+状态：`20k单变量control完成；双重compositional gate通过`
 
 - 完全复用Phase 5ZA action mask、state、reward matrix、seed 7、20k、CRN、Q update、epsilon和checkpoints。唯一训练行为变化：key/door skills首次达到各自target furthest stage后立即option-terminate；goal仍由native success终止，navigation仍运行64步。
 - Option termination不是额外reward、solver或macro action。它定义skill调用何时把控制权返回high-level policy，并使training/evaluation contract一致。
 - Gate同时要求四个furthest target rates、四个final-state rates、goal native success各 `>=0.80`，且last-3全部通过。Door manifest必须final `door_open=true`，key必须final carrying key。
 - 若通过，固定该control interface后才设计DoorKey online discovery；若失败，不调整termination tolerance，检查哪个layout在pickup/toggle前停止或Q未覆盖。
+
+### 20k Option-termination 结果
+
+Run：`doorkey5_tabular_balanced_control_actionmask_optionterm_seed7_20260722_113643`
+
+| Episodes | Navigation | Key | Door | Goal/native | Final-state gate |
+| ---: | ---: | ---: | ---: | ---: | :---: |
+| 4k | 1.000 | 1.000 | 1.000 | 0.494 | fail |
+| 8k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 12k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 18k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 19k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 20k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| Independent final | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+
+- Furthest-stage rates与final-state rates在8k后完全一致；last-3及independent final均为四项1.000，checkpoint stability和signal gate同时通过。Final Q覆盖160个compact states。
+- Independent final中key/door options平均分别用2.35/5.31步返回；goal平均9.81步并取得native termination。短option不再把已经完成的interaction在剩余64步内撤销。
+- 人工检查contact sheet与manifest：key rollout在第2步真实携带yellow key且door closed；door rollout在第4步真实把door打开并保持open；goal rollout在第8步进入绿色goal，native success为true。Navigation仍运行完整64步且没有接触key。
+- 4k时只有goal为0.494，8k后连续五个checkpoints恢复到1.000，因此没有把早期未收敛snapshot伪装成全程通过。
+
+![DoorKey option-termination control audit](outputs/skill_discovery/minigrid_doorkey_training/doorkey5_tabular_balanced_control_actionmask_optionterm_seed7_20260722_113643/policy_rollout_audit.png)
+
+> [里程碑]
+> DoorKey 5x5 control upper bound通过：state-changing official-action mask加target-reaching option termination，在不使用solver、macro action、imitation或native reward训练的条件下，使navigation、拿钥匙、开门、到终点四个固定options同时通过历史达到率与最终状态交付率。下一步可以把oracle reward rows替换为online discovery与bootstrap balanced assignment；若后续失败，应归因于发现/分配，而不再归因于基础控制接口。
 
 ## Phase 6：迁移到 Hammer
 
