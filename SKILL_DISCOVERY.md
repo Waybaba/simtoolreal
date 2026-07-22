@@ -3,9 +3,9 @@
 > [当前状态]
 > 分支：`codex/skill-discovery`
 >
-> 当前阶段：Phase 3 fixed-layout gate 已通过但 layout generalization 失败；Phase 4A 官方 MiniGrid 环境审计已通过，Phase 4B 正在定位长时序 PPO 的部署失败。
+> 当前阶段：轻量环境的symbolic discovery/control链已建立；DoorKey 5x5 online discovery三种子通过，8x8与neural-control扩展失败。Frozen DINO current通过独立frame gate，但完整sequence DAG gate因door误分类形成环而失败。
 >
-> 当前动作：Phase 5I MiniGrid GoToObject environment gate 已通过。下一步运行 mission-free tabular balanced-oracle control upper bound；通过前不跑无监督 objective。
+> 当前动作：Phase 5ZJ已经按预注册停止online visual reward。下一步必须提出新的、使用全新groups验证的表示或时序方法；不在失败数据上调threshold、refit center或用oracle修图，Hammer继续后移。
 
 ## 一眼看完整流程
 
@@ -2409,7 +2409,7 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 
 ## Phase 5ZJ：Frozen Visual Cluster Sequence and DAG Gate
 
-状态：`连续trajectory协议已冻结，尚未运行`
+状态：`完整运行完成；accuracy通过，DAG失败，停止online visual reward`
 
 - 使用全新generation groups `97/107`，每group 128 common layouts x四个Phase 5ZC frozen policies。保存每条greedy option从reset到return的完整compact-state sequence、RGB、skill、env seed和native success，不训练policy。
 - 相同12-int compact state只保存/编码一张current RGB；若同一key出现不同RGB或不同oracle stage，立即判state alias并停止。DINO current与Phase 5ZG frozen centers/mapping不refit。
@@ -2417,6 +2417,29 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 - Transition graph只使用未命名cluster IDs和连续sequence changes；边支持仍要求count `>=25`且占target incoming至少1%。所有reset必须落在唯一root cluster，native goal terminals必须落在唯一goal cluster。
 - Structural DAG gate要求四clusters非空、每个非root cluster有supported predecessor、graph无环，并且四个cluster的transitive-ancestor cardinalities排序后恰为 `[0,1,2,3]`；这表示无label sequence恢复一条可组合四阶段链。
 - 若accuracy与DAG gates同时通过，下一大计划才实现on-demand finite visual lookup和online discovery；若任一失败，停止online visual reward，不通过调整edge threshold、refit centers或oracle修边追结果。
+
+### 完整运行结果
+
+- Sequence data：`doorkey5_policy_sequences_20260722_130159`
+- Frozen graph audit：`doorkey5_visual_sequence_graph_20260722_130233`
+- Groups 97/107共生成1,024条完整greedy option sequences、21,890个state occurrences；压缩后72个unique compact states，四stage分别为48/13/9/2。256条goal sequences全部native success，compact-state RGB/stage alias为0，data gate通过。
+- 联系表已人工检查：四行真实对应navigation、carrying key、open door与native goal terminal。Goal只有2个unique终态，所以第三格只为显示而重复，不计为额外数据。
+- `facebook/dinov2-small`、current-frame representation、Phase 5ZG centers和cluster mapping全部冻结；编码GPU耗时0.43秒，没有fit/refit。
+
+| Audit weighting | Accuracy | Nav recall | Key recall | Door recall | Goal recall | Accuracy gate |
+| --- | ---: | ---: | ---: | ---: | ---: | :---: |
+| Unique compact state | 0.972 | 1.000 | 1.000 | 0.778 | 1.000 | pass |
+| Sequence occurrence | 0.988 | 1.000 | 1.000 | 0.819 | 1.000 | pass |
+
+- Frozen mapping为cluster `2/0/3/1` → navigation/key/door/goal。所有reset只落在cluster 2，所有native goal terminals只落在cluster 1，因此root与goal唯一性通过。
+- 支持边为 `2→0:768`、`0→3:512`、`0→1:124`、`3→0:124`、`3→1:132`。Door内部的两类错误同时制造 `0→3` 与 `3→0`，形成受支持环；`cycle_free=false`，ancestor cardinalities无法成为 `[0,1,2,3]`，DAG gate与完整visual-sequence gate正式失败。
+
+![DoorKey complete sequence state audit](outputs/skill_discovery/minigrid_doorkey_visual/doorkey5_policy_sequences_20260722_130159/unique_state_manual_audit.png)
+
+![DoorKey frozen sequence transition audit](outputs/skill_discovery/minigrid_doorkey_visual/doorkey5_visual_sequence_graph_20260722_130233/sequence_transition_audit.svg)
+
+> [里程碑]
+> Frozen DINO current在独立完整轨迹上仍有很高的frame分类准确率，但不能恢复无环的四阶段转换图。这个失败说明“单帧stage prediction基本正确”不足以作为online skill reward：少量door pose错误会产生结构性反向边。按预注册停止on-demand visual lookup与online visual discovery，不改edge threshold、不在groups 97/107上refit、不用oracle删除反向边。
 
 ## Phase 6：迁移到 Hammer
 

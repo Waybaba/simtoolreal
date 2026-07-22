@@ -74,6 +74,35 @@ class UniqueRenderedStateCache:
         return index
 
 
+def source_tabular_config(source_metrics: dict[str, object]) -> DoorKeyTabularConfig:
+    source = source_metrics["config"]
+    defaults = DoorKeyTabularConfig()
+    target_assignment = source_metrics.get(
+        "target_assignment",
+        source.get("target_assignment", defaults.target_assignment),
+    )
+    reward_matrix = source_metrics.get(
+        "reward_matrix",
+        source.get("reward_matrix", defaults.reward_matrix),
+    )
+    return DoorKeyTabularConfig(
+        env_id=str(source["env_id"]),
+        seed=int(source["seed"]),
+        episodes=int(source["episodes"]),
+        horizon=int(source["horizon"]),
+        evaluation_checkpoints=tuple(source["evaluation_checkpoints"]),
+        eval_episodes_per_skill=1,
+        stage_rate_gate=float(source["stage_rate_gate"]),
+        valid_action_mask=bool(source["valid_action_mask"]),
+        terminate_on_target=bool(source["terminate_on_target"]),
+        target_assignment=tuple(int(value) for value in target_assignment),
+        reward_matrix=tuple(
+            tuple(float(value) for value in row)
+            for row in reward_matrix
+        ),
+    )
+
+
 def _write_contact_sheet(
     path: Path,
     frames: np.ndarray,
@@ -96,9 +125,10 @@ def _write_contact_sheet(
     colors = ((104, 117, 125), (40, 117, 164), (209, 112, 49), (43, 137, 95))
     manifest = []
     for stage in range(4):
-        selected = np.flatnonzero(stages == stage)[:columns]
-        if len(selected) != columns:
-            raise RuntimeError("not enough unique states for contact sheet")
+        candidates = np.flatnonzero(stages == stage)
+        if not len(candidates):
+            raise RuntimeError("contact sheet is missing an oracle stage")
+        selected = candidates[np.arange(columns) % len(candidates)]
         y = stage * (frame_height + gap)
         sheet[y : y + frame_height, :marker] = colors[stage]
         for column, index in enumerate(selected):
@@ -110,6 +140,7 @@ def _write_contact_sheet(
                     "column": column,
                     "state_index": int(index),
                     "compact_state": keys[index].tolist(),
+                    "unique_states_in_stage": int(len(candidates)),
                 }
             )
     _write_png(path, sheet)
@@ -125,23 +156,7 @@ def generate_policy_sequences(
     source_metrics = json.loads(
         (source_run / "metrics.json").read_text(encoding="utf-8")
     )
-    source = source_metrics["config"]
-    config = DoorKeyTabularConfig(
-        env_id=str(source["env_id"]),
-        seed=int(source["seed"]),
-        episodes=int(source["episodes"]),
-        horizon=int(source["horizon"]),
-        evaluation_checkpoints=tuple(source["evaluation_checkpoints"]),
-        eval_episodes_per_skill=1,
-        stage_rate_gate=float(source["stage_rate_gate"]),
-        valid_action_mask=bool(source["valid_action_mask"]),
-        terminate_on_target=bool(source["terminate_on_target"]),
-        target_assignment=tuple(int(value) for value in source["target_assignment"]),
-        reward_matrix=tuple(
-            tuple(float(value) for value in row)
-            for row in source["reward_matrix"]
-        ),
-    )
+    config = source_tabular_config(source_metrics)
     if not config.valid_action_mask or not config.terminate_on_target:
         raise ValueError("source policy must use mask and target option termination")
     q_table = load_doorkey_q_table(source_run / "q_table.npz")
