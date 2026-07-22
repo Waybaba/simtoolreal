@@ -12,6 +12,7 @@ import numpy as np
 from skill_discovery.train_minigrid_gotoobject_adaptive import (
     AdaptiveAllocationConfig,
     load_bootstrap_matrix,
+    scheduler_observation,
     select_deficit_skill,
     train_adaptive_run,
 )
@@ -48,6 +49,21 @@ class AdaptiveAllocationTrainerTest(unittest.TestCase):
         selected = select_deficit_skill(np.asarray([0.4, -0.2, 0.1]), rng)
         self.assertEqual(selected, 1)
 
+    def test_rank_signal_removes_third_place_reward_scale(self) -> None:
+        matrix = (
+            (1.0, -3.8, 0.0),
+            (-1.1, 0.0, 1.0),
+            (0.0, 1.0, -3.2),
+        )
+        self.assertEqual(
+            scheduler_observation(matrix, 0, -3.8, "top_reward_indicator"),
+            0.0,
+        )
+        self.assertEqual(
+            scheduler_observation(matrix, 1, 1.0, "top_reward_indicator"),
+            1.0,
+        )
+
     def test_tiny_run_preserves_allocation_artifacts(self) -> None:
         config = AdaptiveAllocationConfig(
             seed=113,
@@ -56,6 +72,7 @@ class AdaptiveAllocationTrainerTest(unittest.TestCase):
             eval_interval=20,
             eval_episodes_per_skill=2,
             stability_checkpoints=2,
+            scheduler_signal="top_reward_indicator",
         )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -68,6 +85,7 @@ class AdaptiveAllocationTrainerTest(unittest.TestCase):
             self.assertEqual(sum(output["total_episode_counts"]), 40)
             self.assertEqual(len(output["ema_trace"]), 10)
             self.assertEqual(len(output["evaluations"]), 2)
+            self.assertEqual(output["scheduler_signal"], "top_reward_indicator")
             self.assertFalse(output["scheduler_reads_semantic_stage"])
             self.assertTrue((output_dir / "metrics.json").exists())
             self.assertTrue((output_dir / "q_table.npz").exists())

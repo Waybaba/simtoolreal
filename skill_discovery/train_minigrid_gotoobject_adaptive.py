@@ -43,6 +43,7 @@ class AdaptiveAllocationConfig:
     epsilon_end: float = 0.0
     epsilon_decay_fraction: float = 0.8
     ema_alpha: float = 0.05
+    scheduler_signal: str = "raw_reward"
     eval_interval: int = 3_000
     eval_episodes_per_skill: int = 512
     stability_checkpoints: int = 3
@@ -63,6 +64,8 @@ class AdaptiveAllocationConfig:
             raise ValueError("epsilon decay fraction must be in (0, 1]")
         if not 0 < self.ema_alpha <= 1:
             raise ValueError("EMA alpha must be in (0, 1]")
+        if self.scheduler_signal not in {"raw_reward", "top_reward_indicator"}:
+            raise ValueError("unknown scheduler signal")
         if self.stability_checkpoints <= 0:
             raise ValueError("stability checkpoints must be positive")
         if len(self.stage_rate_gates) != len(GOTOOBJECT_STAGES):
@@ -83,12 +86,27 @@ def load_bootstrap_matrix(path: Path) -> tuple[tuple[float, ...], ...]:
 
 
 def select_deficit_skill(
-    ema_rewards: np.ndarray,
+    ema_scores: np.ndarray,
     rng: np.random.Generator,
 ) -> int:
-    minimum = float(ema_rewards.min())
-    candidates = np.flatnonzero(np.isclose(ema_rewards, minimum, atol=1.0e-12))
+    minimum = float(ema_scores.min())
+    candidates = np.flatnonzero(np.isclose(ema_scores, minimum, atol=1.0e-12))
     return int(rng.choice(candidates))
+
+
+def scheduler_observation(
+    matrix: tuple[tuple[float, ...], ...],
+    skill: int,
+    terminal_reward: float,
+    signal: str,
+) -> float:
+    if signal == "raw_reward":
+        return terminal_reward
+    if signal == "top_reward_indicator":
+        return float(
+            np.isclose(terminal_reward, max(matrix[skill]), atol=1.0e-12)
+        )
+    raise ValueError("unknown scheduler signal")
 
 
 def _epsilon(config: AdaptiveAllocationConfig, episode: int) -> float:
@@ -198,7 +216,7 @@ def train_adaptive_run(
     visits: dict[RelationKey, np.ndarray] = {}
     action_rng = np.random.default_rng(config.seed)
     scheduler_rng = np.random.default_rng(config.seed + 800_000)
-    ema_rewards = np.zeros(config.num_skills, dtype=np.float64)
+    ema_scores = np.zeros(config.num_skills, dtype=np.float64)
     core_counts = np.zeros(config.num_skills, dtype=np.int64)
     extra_counts = np.zeros(config.num_skills, dtype=np.int64)
     terminal_reward_sums = np.zeros(config.num_skills, dtype=np.float64)
@@ -227,13 +245,19 @@ def train_adaptive_run(
                 core_counts[skill] += 1
                 terminal_reward_sums[skill] += result["terminal_reward"]
                 terminal_counts[skill, result["terminal_stage"]] += 1
-                ema_rewards[skill] = _update_ema(
-                    ema_rewards[skill],
+                observation = scheduler_observation(
+                    matrix,
+                    skill,
                     float(result["terminal_reward"]),
+                    config.scheduler_signal,
+                )
+                ema_scores[skill] = _update_ema(
+                    ema_scores[skill],
+                    observation,
                     config.ema_alpha,
                 )
                 total_episode += 1
-            selected = select_deficit_skill(ema_rewards, scheduler_rng)
+            selected = select_deficit_skill(ema_scores, scheduler_rng)
             result = _train_episode(
                 env,
                 config,
@@ -249,9 +273,15 @@ def train_adaptive_run(
             extra_counts[selected] += 1
             terminal_reward_sums[selected] += result["terminal_reward"]
             terminal_counts[selected, result["terminal_stage"]] += 1
-            ema_rewards[selected] = _update_ema(
-                ema_rewards[selected],
+            selected_observation = scheduler_observation(
+                matrix,
+                selected,
                 float(result["terminal_reward"]),
+                config.scheduler_signal,
+            )
+            ema_scores[selected] = _update_ema(
+                ema_scores[selected],
+                selected_observation,
                 config.ema_alpha,
             )
             total_episode += 1
@@ -259,9 +289,10 @@ def train_adaptive_run(
                 {
                     "cycle": cycle + 1,
                     "total_policy_episodes": total_episode,
-                    "ema_terminal_rewards": ema_rewards.tolist(),
+                    "ema_scheduler_scores": ema_scores.tolist(),
                     "selected_extra_skill": selected,
                     "selected_terminal_reward": result["terminal_reward"],
+                    "selected_scheduler_observation": selected_observation,
                 }
             )
             if total_episode % config.eval_interval == 0:
@@ -297,14 +328,14 @@ def train_adaptive_run(
         "frozen_reward_matrix": matrix,
         "elapsed_seconds": elapsed,
         "training_layout_seed_mode": "three_skill_core_plus_selected_extra_same_layout",
-        "scheduler_signal": "terminal_frozen_reward_ema",
+        "scheduler_signal": config.scheduler_signal,
         "scheduler_reads_semantic_stage": False,
         "core_episode_counts": core_counts.tolist(),
         "extra_episode_counts": extra_counts.tolist(),
         "total_episode_counts": (core_counts + extra_counts).tolist(),
         "terminal_reward_sums": terminal_reward_sums.tolist(),
         "terminal_counts_audit_only": terminal_counts.tolist(),
-        "final_ema_terminal_rewards": ema_rewards.tolist(),
+        "final_ema_scheduler_scores": ema_scores.tolist(),
         "ema_trace": ema_trace,
         "evaluations": evaluations,
         "final_evaluation": final,
@@ -329,6 +360,11 @@ def main() -> None:
     parser.add_argument("--policy-episodes", type=int, default=15_000)
     parser.add_argument("--horizon", type=int, default=64)
     parser.add_argument("--ema-alpha", type=float, default=0.05)
+    parser.add_argument(
+        "--scheduler-signal",
+        choices=("raw_reward", "top_reward_indicator"),
+        default="raw_reward",
+    )
     parser.add_argument("--eval-interval", type=int, default=3_000)
     parser.add_argument("--eval-episodes", type=int, default=512)
     parser.add_argument("--output-dir", type=Path)
@@ -338,6 +374,7 @@ def main() -> None:
         policy_episodes=args.policy_episodes,
         horizon=args.horizon,
         ema_alpha=args.ema_alpha,
+        scheduler_signal=args.scheduler_signal,
         eval_interval=args.eval_interval,
         eval_episodes_per_skill=args.eval_episodes,
     )
