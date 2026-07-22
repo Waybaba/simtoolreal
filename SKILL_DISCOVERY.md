@@ -3247,7 +3247,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/isotonic_state_decoder_202
 
 ## Phase 7A：Fresh Balanced + Natural Lockbox
 
-状态：`fresh balanced lockbox已冻结；development model未训练`
+状态：`fresh balanced lockbox通过；fresh natural未运行`
 
 Phase 5ZZ的reference/audit已经被多次模型分析，从本阶段起合并为development（每类512），不再声称是holdout。Phase 7A在看任何新样本前同时冻结最终model、fresh balanced lockbox及fresh natural lockbox；最终只允许一次顺序评估。
 
@@ -3282,6 +3282,18 @@ Run：`outputs/skill_discovery/mountaincar_continuous/lockbox_dataset_20260722_1
 
 > [里程碑]
 > 开发集与最终证据重新隔离：新balanced lockbox没有复用此前看过的任何pair。下一步只按已提交参数fit一次development model并评估该artifact。
+
+### Phase 7A Balanced Lockbox 结果：Frozen HistGradient 通过
+
+Run：`outputs/skill_discovery/mountaincar_continuous/hist_gradient_lockbox_20260722_174801`
+
+- Development/lockbox分别为五类各512/256，2,560/1,280 unique hashes且交集为0。Frozen HistGradient完整运行200 iterations，没有early stopping或retry。
+- Fresh lockbox accuracy/macro均为`0.9922`。Recalls为none `0.980`、left `0.996`、valley `0.996`、right `0.988`、goal `1.000`；五类均非空。
+- 10/1,280个错误：none误报left/valley/right为2/1/2，left/valley误报none各1，right误报none/valley为1/2，goal零错误。Minimum confidence 0.882。
+- 这是预注册model对fresh lockbox的唯一一次evaluation；model artifact现已冻结，不使用这些labels重训。Balanced lockbox允许进入fresh natural。
+
+> [里程碑]
+> 全新、hash-isolated holdout复现了0.992 balanced性能，说明改进不是反复查看旧audit造成的。下一步只运行全新seeds的natural lockbox，模型与feature不再变化。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3800,6 +3812,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：position MAE/p99 0.000376/0.001600；velocity MAE/p99 0.000567/0.002080；balanced accuracy 0.9961。
 - 结果：classification与position gates通过，velocity p99略高于0.002，continuous final gate失败。
 - 决定：不放宽gate、不调wall threshold、不运行natural，关闭centroid decoder路线。当前audit转为development；下一可信评估必须使用预注册的新balanced/natural lockbox seeds。
+
+### D-049：Frozen HistGradient 通过 Fresh Balanced Lockbox
+
+- 日期：2026-07-22
+- 证据：2,560 development与1,280 fresh lockbox hashes零重叠；model参数在生成lockbox前提交。
+- 结果：fresh accuracy/macro 0.9922，最低none recall 0.9805，goal 1.0。
+- 决定：冻结model，允许运行预注册fresh natural seeds；禁止用balanced lockbox labels重训或校准。
 
 ## 实验日志
 
