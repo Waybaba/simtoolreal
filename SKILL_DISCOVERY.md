@@ -1748,7 +1748,7 @@ Run：`gotoobject_balanced_occupancy_seed7_formal_20260722_080420`
 
 ## Phase 5Q：Block-wise Calibrated Spread
 
-状态：`20k两时间尺度计划已冻结，尚未运行`
+状态：`20k两时间尺度正式运行完成；bootstrap通过，但policy gate失败`
 
 ### 算法契约
 
@@ -1766,6 +1766,31 @@ Run：`gotoobject_balanced_occupancy_seed7_formal_20260722_080420`
 - Final far/adjacent/carried matched rates各 `>=0.90`，且policy-phase last-3 checkpoints全部通过。仍人工核对carried object removal、`carrying` state和三条代表轨迹。
 - 保存bootstrap counts/raw matrix/top-stage permutation、calibrated frozen matrix、Q/visits、shadow final counts/matrix、5个checkpoints、SVG、PNG与manifest。
 - 若bootstrap collision或final gate失败，不改bootstrap长度、block比例或threshold；先根据保存的raw/shadow matrices判断是早期assignment形成失败还是policy phase失败。
+
+### 20k Block-wise 结果
+
+Run：`gotoobject_blockwise_spread_seed7_20260722_094708`
+
+| Policy episodes | Far | Adjacent | Carried | Gate |
+| ---: | ---: | ---: | ---: | :---: |
+| 3k | 0.844 | 0.793 | 0.496 | fail |
+| 6k | 0.869 | 0.908 | 0.709 | fail |
+| 9k | 0.889 | 0.955 | 0.818 | fail |
+| 12k | 0.918 | 0.986 | 0.863 | fail |
+| 15k | 0.920 | 0.992 | 0.895 | fail |
+| Independent final | 0.916 | 0.988 | 0.867 | fail |
+
+- Bootstrap gate通过：三个rows的top stages为 `[far, carried, adjacent]`，没有assignment collision。Raw matrix为 `[[+0.841,-3.277,-0.020],[-1.407,-0.270,+0.726],[-0.424,+0.670,-3.945]]`。
+- Frozen row-affine matrix为 `[[1,-3.785,0],[-1.142,0,1],[0,1,-3.219]]`。Carried row没有惩罚必经的adjacent stage，但其policy仍只从0.496单调升到0.895，独立final为0.867。
+- Shadow online matrix在policy phase结束时仍保持同一top-stage permutation；未观察到assignment重新碰撞。因此这次失败不是bootstrap没有发现三种stage，也不是后半程assignment漂移。
+- 独立final和last-3均未过预注册门槛，正式判定失败。不能用15k checkpoint的0.895四舍五入为成功，也不追加同配置训练。
+- 人工图像与manifest审计通过：carried代表轨迹执行真实pickup，floor objects从2变1，`carrying=[ball, yellow]`；far和adjacent代表轨迹也与标签一致。失败来自泛化成功率，不是metric或渲染造假。
+- 与Phase 5P相比，本实验把总20k拆成5k discovery加15k fresh-policy，并改用common-random-number training layouts，因此不能把差值只归因于某一个因素。现有证据支持：block-wise calibration已解决online co-adaptation与assignment形成，但在固定总预算下，等量round-robin更新对多步compositional carried skill仍不够高效。
+
+![Block-wise spread 20k audit](outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_blockwise_spread_seed7_20260722_094708/policy_rollout_audit.png)
+
+> [方向变化]
+> 下一步不继续扫描bootstrap比例或单纯延长预算。先设计一个只改变skill采样/更新分配的受控实验：让学习较慢或具有更长前置链的skill获得自适应训练机会，同时保持总environment budget、frozen matrix、CRN layouts和final gate不变。该实验需要在运行前冻结分配规则，并避免直接读取ground-truth stage标签来挑选skill。
 
 ## Phase 6：迁移到 Hammer
 
