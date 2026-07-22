@@ -5,7 +5,7 @@
 >
 > 当前阶段：Phase 3 fixed-layout gate 已通过但 layout generalization 失败；Phase 4A 官方 MiniGrid 环境审计已通过，Phase 4B 正在定位长时序 PPO 的部署失败。
 >
-> 当前动作：Phase 5G 8x8+unseen-style stress 失败，停止 FrozenLake style sweep。下一步设计不读取 state label 的 scale-aware tile/patch trajectory representation。
+> 当前动作：Phase 5H scale-aware tile probe 失败并停止调参。下一步审计本地 MiniGrid GoToObject 轻量 object-centric 任务，再决定是否作为下一 public skill environment。
 
 ## 一眼看完整流程
 
@@ -1383,7 +1383,7 @@ Run：`frozenlake_8x8_style_stress_20260722_064847`
 
 ## Phase 5H：Scale-aware Tile/Patch Representation
 
-状态：`方法设计中，尚未预注册运行`
+状态：`失败`
 
 下一步仍保持无物理、图形环境，但处理 Phase 5F/G 暴露的真实问题：同一 semantic event 在 4x4 与 8x8 中占据不同屏幕尺度，global CLS centers 不可直接迁移。
 
@@ -1394,6 +1394,75 @@ Run：`frozenlake_8x8_style_stress_20260722_064847`
 3. 方法必须同时重跑 4x4→8x8 center zero-shot 与 8x8 unseen-style stress；不能只在失败集上 fit 后报告同集结果。
 4. 先做小型离线 representation probe，不训练 skill policy。具体 pooling、reference split 与 gates 在实现前写入本文件。
 5. 该方法利用规则 grid，只是 scale-aware 机制探针，不宣称可直接迁移到 Hammer；通过后还需要在非网格图形环境验证。
+
+### Phase 5H 预注册方法
+
+**唯一 candidate：`top4_tile_delta`**
+
+1. 输入只用每条 trajectory 的 64x64 RGB start/middle/final。Grid size 4 或 8 来自 public environment config；它只定义等宽 tile 边界，不提供 agent、hole、goal 或 terminal state。
+2. 对 start→middle 与 start→final 分别计算每个 tile 的 mean absolute RGB difference，按 score 选 top 4；top-k 固定为 4，不做 sweep。
+3. 对每个被选 tile，把 start tile 与 target tile 都 resize 到 64x64，再用同一个 frozen DINOv2-small CLS 编码。每条 trajectory 最多编码 16 个 tile crops。
+4. 每对 crop 使用 `normalize(E_target - E_start)`。每个 transition 对 4 个 delta 做 permutation-invariant `mean(delta) + mean(abs(delta)) + max(abs(delta))` pooling；middle/final 两段拼接后再 L2 normalize。
+5. 只在 4x4 train seeds `7/17/27` 上无标签 KMeans K=3、seed 7、n-init 32。4x4 outcome labels 只用于 fit 完成后的 cluster permutation alignment；8x8 labels不参与 centers 或 mapping。
+6. 不训练 DINO，不加入 state features，不用 outcome 选 tiles，不比较 top-2/top-8、pooling weight、classifier 或 center 数量。
+
+### Phase 5H 数据与顺序
+
+- `4x4 style audit`：复用 1,920 条 dataset；train 保持原 style，audit seeds 37/47 使用已冻结 nuisance transform。
+- `8x8 scale audit`：复用 960 条原-style dataset，全部作为 4x4-center zero-shot target。
+- `8x8 scale+style audit`：复用 Phase 5G 的 16 styles 307–457 与每 outcome 32 条固定 audit sources。
+- 先生成 4x4/8x8 共 30 条 selected-tile contact sheet。Selection gate：两个 transition 的 top-4 change-energy capture ratio 在每个 layout 的 median 均 `>=0.50`，且至少 95% trajectories 的 top score `>0`；画面无空白/错切才调用 GPU。
+- DINO tile crops 预计约 30k（4x4 dataset）+15k（8x8 dataset）+25k（8x8 style），GPU 0 顺序缓存；不需要占用多卡复制同一模型。
+
+### Phase 5H Representation Gates
+
+1. **4x4 style gate**：accuracy `>=0.90`、safe `>=0.75`、hole/goal 各 `>=0.95`、audit clusters 非空。
+2. **4x4→8x8 scale zero-shot gate**：accuracy `>=0.80`，三 outcome recall 各 `>=0.70`。
+3. **8x8 scale+style gate**：accuracy `>=0.85`、safe/hole 各 `>=0.85`、goal `>=0.70`，至少 12/16 styles accuracy `>=0.80`。
+4. 三项全部通过才认为 scale-aware probe 成功。若 selection gate 失败则不编码；若 representation gate 失败，完整保留结果，不调整 top-k/pooling，在进入非网格环境前重新判断 tile prior 是否值得保留。
+
+### Phase 5H Selection 与编码结果：通过
+
+- 4x4 run：`frozenlake_4x4_tile_selection_20260722_065517`；8x8 run：`frozenlake_8x8_tile_selection_20260722_065517`。
+- 两个 layout 的 start→middle/final median top-4 change-energy capture 均为 `1.000`；4x4/8x8 start→middle positive fraction `0.986/0.997`，final 均 1.0。
+- 两张 contact sheet 已人工检查：选框覆盖 agent departure/arrival、hole 破裂、goal 占用；放大 crops 正常，空白补位仅因实际变化少于 4 tiles。
+- GPU 0/1/2 并行编码 4x4、8x8、8x8-style：`30,720/15,360/24,576` crops，DINO 用时 `80.7/41.1/66.2s`，均得到 2304-d vectors。
+
+![FrozenLake 4x4 selected tiles](outputs/skill_discovery/frozenlake_visual/frozenlake_4x4_tile_selection_20260722_065517/tile_selection_preview.png)
+
+![FrozenLake 8x8 selected tiles](outputs/skill_discovery/frozenlake_8x8/frozenlake_8x8_tile_selection_20260722_065517/tile_selection_preview.png)
+
+### Phase 5H Representation 结果：失败
+
+Run：`frozenlake_tile_transfer_20260722_070011`
+
+| Audit | Global temporal delta | Top4 tile delta | Tile goal recall | Tile gate |
+| --- | ---: | ---: | ---: | ---: |
+| 4x4 style | 0.983 | 0.747 | 1.000 | fail（safe 0.273） |
+| 8x8 scale | 0.590 | 0.415 | 0.209 | fail |
+| 8x8 scale+style | 0.782 | 0.370 | 0.037 | fail |
+
+- 4x4 train KMeans aligned accuracy 仅 `0.728`，cluster sizes `661/107/384`；局部 delta 的 Euclidean volume 优先拆分 safe/hole 几何子模态，没有自然形成三 semantic clusters。
+- 诊断性全量 labeled 1-NN 上界：4x4 style `1.000`，8x8 scale `0.959`（safe/hole/goal `0.878/1/1`）。局部表示包含跨尺度信息，但 KMeans objective 没有找到它。
+- 同一全量 1-NN 在 8x8 scale+style 仅 `0.609`，safe/hole/goal `0.488/0.963/0.375`。因此少量 reference 可能修复 center alignment，却不足以解决组合 invariance。
+- Selection 正确但 representation gates 全失败。按预注册不扫描 top-k、pooling 或 center count，`top4_tile_delta` 被拒绝。
+
+![FrozenLake tile transfer comparison](outputs/skill_discovery/frozenlake_tile_transfer/frozenlake_tile_transfer_20260722_070011/tile_transfer_comparison.svg)
+
+> [失败记录]
+> 局部放大不是自动的 semantic metric：RGB change tiles 找对了事件位置，但 permutation-invariant DINO delta + KMeans 仍按视觉/几何体积聚类。这个负结果阻止我们把 object crop 当成无标签语义解决方案。
+
+## Phase 5I：Next Public Object-centric Environment Audit
+
+状态：`候选审计待运行`
+
+停止 FrozenLake representation 变体后，下一候选优先使用已安装 MiniGrid 的 `GoToObject` 类任务：
+
+1. 它是现成、轻量、无刚体物理的图形环境，符合“先简单再复杂”；对象身份与 agent-object relation 比 safe/hole/goal 更接近 manipulation skill 语义。
+2. 相比已经失败的 DoorKey PPO，它没有 pickup key→unlock door→goal 的长层级 credit chain，能更干净地区分 representation/objective 与控制失败。
+3. 先查询本地 registry、reset reproducibility、object count/type/color、mission依赖与 scripted reachability；不先训练 PPO。
+4. 只有至少两种对象 relation 可在相同 environment distribution 中稳定到达，才预注册 skill classes、random frequency、oracle control 与无监督 baseline。
+5. 若本地 GoToObject API 仍把 mission/target label直接放入 observation，实验必须明确屏蔽该字段，不能把任务答案作为 skill representation。
 
 ## Phase 6：迁移到 Hammer
 
@@ -1690,6 +1759,14 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - 8x8+16 unseen styles 仅 0.782、4/16 styles 通过，goal recall 0.369；组合 gate 失败。
 - 决定：停止 FrozenLake style/center 调参。下一方法只研究 RGB-derived scale-aware tile/patch representation，禁止 state/outcome-guided crop。
 
+### D-030：RGB Tile 找到变化位置，但无标签聚类仍失败
+
+- 日期：2026-07-22
+- Top-4 tiles 捕获 100% median pixel-change energy，画面确认 object/agent event crops 正确。
+- Tile KMeans 在 4x4 train 仅 0.728；三组 audit accuracy `0.747/0.415/0.370`，全部失败。
+- Full-label 1-NN 在 8x8 original 可达 0.959，但 scale+style 仅 0.609，表明 objective 与 invariance 是两个独立 gap。
+- 决定：拒绝 `top4_tile_delta`，不扫描 pooling/top-k。离开 FrozenLake，先审计 MiniGrid GoToObject 作为轻量 object-centric public bridge。
+
 ## 实验日志
 
 ### 2026-07-22：项目启动
@@ -1919,3 +1996,14 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 > [方向变化]
 > 不再扩展 FrozenLake palette/center sweep。下一步从 RGB grid 自动切 tile 并统一尺度，探索 patch-level temporal change；禁止用 state/outcome 选择 object crop。
+
+### 2026-07-22：Scale-aware Tile Probe 失败
+
+> [结果]
+> RGB top-4 selection 数值与画面均正确，三 GPU 完成约 70k tile crops 编码。方法不是因 crop 错位或编码未完成而失败。
+
+> [失败记录]
+> 无标签 KMeans 在 4x4 train 就只有 0.728；4x4 style、8x8 scale、8x8 scale+style 三 gates 全失败。Full-label 1-NN 证明 scale-only 信息存在，但组合 style 上界也不足。
+
+> [方向变化]
+> 停止 FrozenLake representation sweep。下一步只审计 MiniGrid GoToObject 的本地 API、对象关系与 scripted controllability，先确认它比 DoorKey 更适合作为轻量 object-centric bridge。
