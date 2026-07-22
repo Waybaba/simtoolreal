@@ -1959,6 +1959,18 @@ Summary：`gotoobject_blockwise_spread_replay_multiseed_7_17_29_20260722_103608.
 > [方向变化]
 > 不再增加replay sweep或policy budget。Multi-seed证据暴露两个正交缺口：(1) independent row argmax会产生assignment collision；(2) row-affine calibration可能极度惩罚通往top stage的观测前驱。下一步先在三个已保存bootstrap artifacts上做offline、无训练的balanced assignment与transition-predecessor audit；只有该规则能同时修复seed 17/29且不破坏seed 7时，才考虑新的integrated runs。
 
+## Phase 5W：Balanced Assignment + Transition-predecessor Audit
+
+状态：`artifact-only结构审计计划已冻结，尚未运行`
+
+- 输入固定为Phase 5V seeds `7/17/29` 的bootstrap raw matrices与压缩transition buffers；不运行environment、Q update或policy evaluation。
+- 对每个3x3 raw matrix穷举6个row-to-stage permutations，选择总raw reward最大的one-to-one assignment；精确平局按lexicographic permutation确定。该步骤只使用discovered stage indices，不读取stage语义名称。
+- 从每个run自己的bootstrap buffer统计连续post-step stages的非self transitions。对目标stage，某incoming predecessor若计数至少25且占该target全部非self incoming transitions至少1%，即视为受支持direct predecessor。
+- 为每个skill构造transition-aware matrix：balanced-assigned target reward=`1`，所有受支持incoming predecessors reward=`0`，其余stages reward=`-1`。Target优先，所以即使某stage同时被列为predecessor也保持1。
+- 该变换有两个明确目的：全局assignment消除seed 29独立argmax collision；predecessor floor消除seed 17 carried row对必经adjacent的 `-16.631` 惩罚。它不继承raw reward magnitude，raw matrix只负责全局匹配。
+- Structural gate要求3/3 seeds得到finite unique permutation；每个target至少有一个受支持nonself predecessor；每行target唯一为1、predecessors均为0。额外核对seed 7 assignment不变、seed 17 carried predecessor不再为负、seed 29 collision被解析。
+- 输出保存balanced assignment、6个permutation scores、transition count matrix、supported predecessors与transformed reward matrix。即使gate通过也不算训练成功；只决定是否值得进行下一轮3-seed integrated replication。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
