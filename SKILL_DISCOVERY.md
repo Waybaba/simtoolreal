@@ -3091,7 +3091,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/stratified_none_capacity_2
 
 ## Phase 5ZZ：Visible Valley-threshold Stratified None
 
-状态：`预注册；未运行`
+状态：`capacity通过；正式data未生成`
 
 这是冻结三维feature+1-NN路线允许的最后一次none采样修订。Phase 5ZY八层中只替换失败的`valley_threshold`：accepted next position仍为`(-0.75,0.0)`，velocity从`[-0.005,0.005)`改为两个固定区间`[-0.005,-0.001] union [0.001,0.005)`；previous proposals、action及其他七层完全不变。`0.001`按MountainCar约600像素/1.8 position span对应约0.33像素位移量级，在新run前冻结，不从failed samples搜索最优cutoff。
 
@@ -3102,6 +3102,17 @@ Run：`outputs/skill_discovery/mountaincar_continuous/stratified_none_capacity_2
 
 > [大计划]
 > 先做paired capacity；通过后才实现并生成正式分层shard。Balanced通过才运行约61k natural transitions，所有长命令按约300秒阻塞等待。
+
+### Phase 5ZZ Capacity 结果：Visible Threshold 通过
+
+Run：`outputs/skill_discovery/mountaincar_continuous/visible_stratified_none_capacity_20260722_171939`
+
+- 八层numeric gate全部通过；唯一修改的valley-threshold保持252/256 unique pairs，motion-visible从Phase 5ZY的0.9414提升到`0.9961`。其余七层使用相同seeds复现原counts与rates。
+- 联系表PNG的SHA-256为`d6502cdd8e2dd4557d4e7e25ddf62c5a11c7a44ea8b4cdcc0fa73ec2c88dff31`，与已人工检查的Phase 5ZY联系表逐字节相同，因此manual gate通过；一次内置查看器空白显示经尺寸、非白像素和hash核对确认只是viewer问题。
+- Capacity允许进入正式stratified none dataset；balanced与natural尚未运行。
+
+> [里程碑]
+> 最小可见速度修订通过了预注册capacity gate，且没有改变其他七层。下一步只生成冻结的32×8 reference/audit，不再修改层定义。
 
 ## Phase 6：迁移到 Hammer
 

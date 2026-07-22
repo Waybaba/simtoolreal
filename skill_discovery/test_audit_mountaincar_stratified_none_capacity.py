@@ -7,6 +7,7 @@ import unittest
 import numpy as np
 
 from skill_discovery.audit_mountaincar_stratified_none_capacity import (
+    VISIBLE_STRATA,
     StratifiedNoneCapacityConfig,
     stratum_matches,
 )
@@ -38,6 +39,17 @@ class MountainCarStratifiedNoneCapacityTest(unittest.TestCase):
                     for index in range(8)
                 )
             )
+
+    def test_visible_valley_threshold_excludes_stationary_motion(self) -> None:
+        self.assertFalse(
+            stratum_matches(3, np.asarray([-0.4, 0.0]), False, VISIBLE_STRATA)
+        )
+        self.assertTrue(
+            stratum_matches(3, np.asarray([-0.4, -0.001]), False, VISIBLE_STRATA)
+        )
+        self.assertTrue(
+            stratum_matches(3, np.asarray([-0.4, 0.001]), False, VISIBLE_STRATA)
+        )
 
     def test_capacity_budget_must_be_positive(self) -> None:
         with self.assertRaises(ValueError):

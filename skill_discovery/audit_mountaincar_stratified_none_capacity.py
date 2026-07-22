@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +35,7 @@ class NoneStratum:
     position_high_closed: bool = False
     velocity_low_closed: bool = True
     velocity_high_closed: bool = False
+    minimum_absolute_velocity: float = 0.0
 
 
 STRATA = (
@@ -103,6 +104,12 @@ STRATA = (
     ),
 )
 
+VISIBLE_STRATA = (
+    *STRATA[:3],
+    replace(STRATA[3], minimum_absolute_velocity=0.001),
+    *STRATA[4:],
+)
+
 
 @dataclass(frozen=True)
 class StratifiedNoneCapacityConfig:
@@ -139,8 +146,9 @@ def stratum_matches(
     stratum_index: int,
     next_state: np.ndarray,
     terminated: bool,
+    strata: tuple[NoneStratum, ...] = STRATA,
 ) -> bool:
-    spec = STRATA[stratum_index]
+    spec = strata[stratum_index]
     position, velocity = (float(value) for value in next_state)
     no_relation = not any(
         transition_class(class_index, next_state, terminated)
@@ -160,14 +168,16 @@ def stratum_matches(
             spec.velocity_low_closed,
             spec.velocity_high_closed,
         )
+        and abs(velocity) >= spec.minimum_absolute_velocity
     )
 
 
 def sample_candidate(
     rng: np.random.Generator,
     stratum_index: int,
+    strata: tuple[NoneStratum, ...] = STRATA,
 ) -> tuple[np.ndarray, np.ndarray]:
-    spec = STRATA[stratum_index]
+    spec = strata[stratum_index]
     state = np.asarray(
         [
             rng.uniform(*spec.proposal_position_range),
@@ -182,6 +192,7 @@ def sample_candidate(
 def collect_stratum_capacity(
     config: StratifiedNoneCapacityConfig,
     stratum_index: int,
+    strata: tuple[NoneStratum, ...] = STRATA,
 ) -> tuple[dict[str, object], list[np.ndarray]]:
     seed = config.random_seed + 100_000 * stratum_index
     rng = np.random.default_rng(seed)
@@ -198,13 +209,13 @@ def collect_stratum_capacity(
         while accepted < config.accepted_per_stratum:
             if attempts >= max_attempts:
                 raise RuntimeError(
-                    f"{STRATA[stratum_index].name} collected {accepted}/"
+                    f"{strata[stratum_index].name} collected {accepted}/"
                     f"{config.accepted_per_stratum} after {attempts} attempts"
                 )
             attempts += 1
-            state, action = sample_candidate(rng, stratum_index)
+            state, action = sample_candidate(rng, stratum_index, strata)
             next_state, _, terminated = expected_transition(state, action)
-            if not stratum_matches(stratum_index, next_state, terminated):
+            if not stratum_matches(stratum_index, next_state, terminated, strata):
                 continue
             finite_count += int(
                 np.isfinite(state).all()
@@ -227,7 +238,7 @@ def collect_stratum_capacity(
     motion_visible_rate = motion_visible / accepted
     output = {
         "stratum_index": stratum_index,
-        "stratum": asdict(STRATA[stratum_index]),
+        "stratum": asdict(strata[stratum_index]),
         "seed": seed,
         "attempts": attempts,
         "accepted_transitions": accepted,
@@ -281,6 +292,7 @@ def run_capacity_audit(
     output_dir: Path,
     *,
     workers: int = 4,
+    strata: tuple[NoneStratum, ...] = STRATA,
 ) -> dict[str, object]:
     output_dir.mkdir(parents=True, exist_ok=False)
     with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -289,6 +301,7 @@ def run_capacity_audit(
                 collect_stratum_capacity,
                 [config] * len(STRATA),
                 range(len(STRATA)),
+                [strata] * len(STRATA),
             )
         )
     summaries = [result[0] for result in results]
