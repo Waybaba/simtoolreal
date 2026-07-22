@@ -1507,7 +1507,7 @@ Run：`gotoobject_audit_20260722_070736`
 
 ## Phase 5J：GoToObject Mission-free Tabular Control
 
-状态：`balanced-oracle 计划已冻结，尚未运行`
+状态：`balanced-oracle 完整运行，失败；失败原因已定位到 hidden-time aliasing`
 
 ### Policy State 与动作
 
@@ -1523,6 +1523,44 @@ Run：`gotoobject_audit_20260722_070736`
 - 每5k episodes用固定 common-random-number layout seeds做 1024 eval episodes/skill；evaluation assignment 仍事后求最佳 permutation。
 - Final far/adjacent/carried matched rates各 `>=0.90`，且 last-5 checkpoints全部通过；保存 Q table、outcome curves、五 seed/layout representative rollouts和 relation manifest。
 - 若 seed 7 失败，不延长预算或换 PPO；先检查 compact state aliasing与 exact-terminal adjacent credit。只有 balanced oracle 通过，才在同配置下比较 random、plain semantic DIAYN 与 semantic spread。
+
+### Smoke 与正式结果
+
+- Smoke run：`gotoobject_balanced_smoke_seed7_20260722_071320`，3k episodes。Final far/adjacent/carried 为 `0.664/0.430/0.086`；训练、评估、Q table、SVG、PNG 与 manifest 全部正常写出，但短预算没有形成技能分化。
+- Formal run：`gotoobject_balanced_seed7_formal_20260722_071557`，100k episodes，20 个 5k-spaced checkpoints 全部存在，耗时 `1846.56s`，Q table 共 7,680 states。
+- Formal independent-final far/adjacent/carried 为 `0.707/0.531/0.293`；last-5 checkpoint 无一通过，`signal_gate_passed=false`。
+- 轨迹不是 renderer false positive：carried 代表轨迹执行 pickup 后 floor object count 从2变1，`carrying=[key, green]`；另外两个代表策略以旋转循环保持 far/adjacent terminal relation。
+
+| Episodes | Far | Adjacent | Carried |
+| ---: | ---: | ---: | ---: |
+| 5k | 0.763 | 0.541 | 0.353 |
+| 10k | 0.907 | 0.788 | 0.765 |
+| 20k | 0.900 | 0.837 | 0.871 |
+| 50k | 0.899 | 0.581 | 0.576 |
+| 75k | 0.786 | 0.553 | 0.292 |
+| 100k | 0.746 | 0.577 | 0.301 |
+| Independent final | 0.707 | 0.531 | 0.293 |
+
+![GoToObject failed balanced-oracle rollout audit](outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_balanced_seed7_formal_20260722_071557/policy_rollout_audit.png)
+
+### 失败诊断
+
+- 失败不是 state coverage 不足。三个 skills 都访问全部 7,680 states，各约 2.13M updates；每个 skill 只有1--2个 state 的所有 Q values 仍为零。
+- 失败形状是先升后退化，不是一直学不到。Carried 在20k达到 `0.871` 后持续降到约 `0.30`，同时 assignment 在75k后开始换位。
+- Exact-terminal reward 只在第64步给出，但 policy key 不含 timestep。3k random episodes 的直接审计中，2,882 个 terminal `(state, action)` pairs 有2,811个也在 non-terminal step出现，hidden-time alias rate为 `97.54%`。
+- 同一 Q entry 因而有时接 terminal class reward，有时接 bootstrap target；这个有限时域问题对当前 stationary table 不是 Markov 的。完整覆盖反而让互相冲突的更新逐渐覆盖早期偶然形成的策略，和观测到的退化方向一致。
+
+> [失败记录]
+> Phase 5J 没有通过预注册 gate，不延长预算、不换 seed、不上 PPO，也不开始 random/semantic/spread comparison。保留完整失败 run；下一步只改变 reward timing 来验证 hidden-time 诊断。
+
+## Phase 5K：GoToObject Occupancy-reward Control Diagnostic
+
+状态：`单变量干预计划已冻结，尚未运行`
+
+- 环境、mission-free policy key、五动作、seed 7、gamma 0.99、visit-count learning rate、epsilon schedule 与三 skill target permutation 全部保持 Phase 5J 不变。
+- 唯一干预：从第64步 exact-terminal reward 改为每步 transition 后的 stage occupancy reward `1[stage(s_next)==target(skill)]`。这让 stationary state 的 reward/transition contract 不再依赖隐藏 timestep，也更接近后续 per-step DIAYN reward。
+- 第一轮是20k diagnostic，horizon 64，eval every2k，512 common-random-number layouts/skill。门控为 independent-final far/adjacent/carried各 `>=0.90`，且 last-3 checkpoints全部通过。
+- 若通过，再把 occupancy版本提升为100k formal baseline；若失败，不加预算，检查 greedy cycles与 carried/drop action values。只有 occupancy formal通过才比较 discovery objectives。
 
 ## Phase 6：迁移到 Hammer
 
