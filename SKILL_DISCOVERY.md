@@ -1864,7 +1864,7 @@ Run：`gotoobject_adaptive_deficit_seed7_20260722_100935`
 
 ## Phase 5T：Bootstrap Frozen-reward Relabel Replay
 
-状态：`integrated 20k计划已冻结，尚未运行`
+状态：`integrated 20k完成；independent final通过，但预注册stability gate失败`
 
 - 完整算法仍为5k online semantic-spread discovery加15k frozen-policy，共20k environment episodes。Bootstrap、CRN layout seeds、matrix permutation gate、runner-up/top calibration、policy epsilon和所有评估设置与Phase 5Q完全相同。
 - Bootstrap期间额外记录每个transition的skill、compact relation key、action、post-step discovered stage、next key和terminal flag，并保留episode boundaries。记录不改变online reward、Q update或action选择。
@@ -1873,6 +1873,31 @@ Run：`gotoobject_adaptive_deficit_seed7_20260722_100935`
 - Policy phase恢复Phase 5Q固定round-robin：每个三skill cycle共享layout，共5000 unique policy layouts；不使用Phase 5R/5S scheduler。与Phase 5Q相比，唯一算法变量是冻结reward下对5k bootstrap experience的一次relabel reuse。
 - 保存压缩transition buffer、replay transition/episode counts、replay后policy前Q与visits、bootstrap/frozen/shadow matrices、15k训练Q、5个checkpoints、final、SVG、PNG和manifest。
 - Pass gate仍为independent-final far/adjacent/carried各 `>=0.90`且last-3 checkpoints全部通过。预注册预测是carried高于Phase 5Q的0.867；若仍失败，不增加replay sweeps，转而判断固定20k总预算是否需要更强的function approximation或显式增加policy data。
+
+### 20k Relabel-replay 结果
+
+Run：`gotoobject_blockwise_spread_replay_seed7_20260722_101916`
+
+| Policy episodes | Far | Adjacent | Carried | Gate |
+| ---: | ---: | ---: | ---: | :---: |
+| 3k | 0.961 | 0.947 | 0.887 | fail |
+| 6k | 0.939 | 0.939 | 0.906 | pass |
+| 9k | 0.934 | 0.957 | 0.885 | fail |
+| 12k | 0.957 | 0.969 | 0.967 | pass |
+| 15k | 0.961 | 0.973 | 0.967 | pass |
+| Independent final | 0.971 | 0.971 | 0.955 | pass |
+
+- Bootstrap仍得到与Phase 5Q逐值相同的raw/calibrated matrices和top-stage permutation `[far, carried, adjacent]`，说明transition capture没有扰动discovery过程。
+- 一次reverse replay复用了5000 episodes、320000 transitions，初始化7648个Q states；没有新增environment interaction或第二次sweep。
+- 相比无replay的Phase 5Q，carried在3k/6k/9k/12k/15k从 `0.496/0.709/0.818/0.863/0.895` 提高到 `0.887/0.906/0.885/0.967/0.967`，independent final从0.867提高到0.955。Bootstrap数据的frozen-reward relabel reuse显著提升了组合skill的sample efficiency。
+- 预注册总gate仍失败：last-3 checkpoints为9k/12k/15k，其中9k carried=0.885。不能用后两个checkpoint和independent final覆盖这次失败。
+- 当前epsilon在12k才结束，因此last-3中只有12k、15k两个checkpoints处于zero-exploration training tail；9k仍在更新漂移阶段。这个设计事实解释了stability gate为何与最终policy结论不一致，但它是事后发现，不能修改本run判定。
+- 人工图像和manifest再次确认carried真实pickup：floor objects `2->1`、`carrying=[ball, yellow]`；far/adjacent代表轨迹也正确。所有预注册replay artifacts均存在。
+
+![Bootstrap relabel-replay 20k audit](outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_blockwise_spread_replay_seed7_20260722_101916/policy_rollout_audit.png)
+
+> [里程碑]
+> 这是第一个从online discovery开始、固定20k environment budget且independent final三类全部超过0.95的集成run。它仍不是formal pass；下一步不重训或增加replay sweep，而是对冻结的final policy做预注册多组held-out seed-block audit，判断0.955是否跨evaluation layouts稳定，再决定是否进入multi-seed integrated runs。
 
 ## Phase 6：迁移到 Hammer
 
