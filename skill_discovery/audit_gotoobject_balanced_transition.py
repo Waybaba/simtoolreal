@@ -16,10 +16,16 @@ def maximum_weight_assignment(
     matrix: np.ndarray,
 ) -> tuple[tuple[int, ...], list[dict[str, object]]]:
     matrix = np.asarray(matrix, dtype=np.float64)
-    if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
-        raise ValueError("assignment matrix must be finite and 3x3")
+    if (
+        matrix.ndim != 2
+        or matrix.shape[0] != matrix.shape[1]
+        or matrix.shape[0] == 0
+        or not np.isfinite(matrix).all()
+    ):
+        raise ValueError("assignment matrix must be finite and square")
+    size = matrix.shape[0]
     scores = []
-    for assignment in itertools.permutations(range(3)):
+    for assignment in itertools.permutations(range(size)):
         score = float(
             sum(matrix[skill, stage] for skill, stage in enumerate(assignment))
         )
@@ -36,20 +42,28 @@ def maximum_weight_assignment(
 
 def transition_counts_from_stage_episodes(
     episodes: list[list[int]],
+    *,
+    num_stages: int = len(GOTOOBJECT_STAGES),
 ) -> np.ndarray:
-    counts = np.zeros((3, 3), dtype=np.int64)
+    if num_stages <= 0:
+        raise ValueError("number of stages must be positive")
+    counts = np.zeros((num_stages, num_stages), dtype=np.int64)
     for episode in episodes:
         for source, target in zip(episode[:-1], episode[1:]):
-            if source < 0 or source >= len(GOTOOBJECT_STAGES):
+            if source < 0 or source >= num_stages:
                 raise ValueError("episode contains an invalid source stage")
-            if target < 0 or target >= len(GOTOOBJECT_STAGES):
+            if target < 0 or target >= num_stages:
                 raise ValueError("episode contains an invalid target stage")
             if source != target:
                 counts[source, target] += 1
     return counts
 
 
-def transition_counts_from_buffer(path: Path) -> np.ndarray:
+def transition_counts_from_buffer(
+    path: Path,
+    *,
+    num_stages: int = len(GOTOOBJECT_STAGES),
+) -> np.ndarray:
     with np.load(path) as archive:
         offsets = np.asarray(archive["episode_offsets"], dtype=np.int64)
         stages = np.asarray(archive["stages"], dtype=np.int64)
@@ -57,13 +71,16 @@ def transition_counts_from_buffer(path: Path) -> np.ndarray:
         raise ValueError("episode offsets must start at zero")
     if offsets[-1] != len(stages) or np.any(np.diff(offsets) <= 0):
         raise ValueError("episode offsets do not match non-empty transitions")
-    if np.any(stages < 0) or np.any(stages >= len(GOTOOBJECT_STAGES)):
+    if np.any(stages < 0) or np.any(stages >= num_stages):
         raise ValueError("buffer contains an invalid stage")
     episodes = [
         stages[start:stop].tolist()
         for start, stop in zip(offsets[:-1], offsets[1:])
     ]
-    return transition_counts_from_stage_episodes(episodes)
+    return transition_counts_from_stage_episodes(
+        episodes,
+        num_stages=num_stages,
+    )
 
 
 def supported_predecessors(
@@ -73,17 +90,23 @@ def supported_predecessors(
     minimum_share: float = 0.01,
 ) -> tuple[tuple[int, ...], ...]:
     counts = np.asarray(transition_counts, dtype=np.int64)
-    if counts.shape != (3, 3) or np.any(counts < 0):
-        raise ValueError("transition counts must be a nonnegative 3x3 matrix")
+    if (
+        counts.ndim != 2
+        or counts.shape[0] != counts.shape[1]
+        or counts.shape[0] == 0
+        or np.any(counts < 0)
+    ):
+        raise ValueError("transition counts must be nonnegative and square")
     output = []
-    for target in range(3):
+    for target in range(counts.shape[0]):
         incoming = counts[:, target].copy()
         incoming[target] = 0
         total = int(incoming.sum())
         predecessors = tuple(
             source
             for source, count in enumerate(incoming)
-            if count >= minimum_count
+            if count > 0
+            and count >= minimum_count
             and total > 0
             and count / total >= minimum_share
         )
@@ -91,17 +114,48 @@ def supported_predecessors(
     return tuple(output)
 
 
+def transitive_ancestors(
+    predecessors: tuple[tuple[int, ...], ...],
+) -> tuple[tuple[int, ...], ...]:
+    size = len(predecessors)
+    if any(
+        source < 0 or source >= size
+        for sources in predecessors
+        for source in sources
+    ):
+        raise ValueError("predecessor graph contains an invalid stage")
+    output = []
+    for target in range(size):
+        ancestors = set()
+
+        def visit(source: int, path: set[int]) -> None:
+            if source in path:
+                raise ValueError("predecessor graph contains a cycle")
+            if source in ancestors:
+                return
+            next_path = path | {source}
+            for predecessor in predecessors[source]:
+                visit(predecessor, next_path)
+            ancestors.add(source)
+
+        for source in predecessors[target]:
+            visit(source, {target})
+        output.append(tuple(sorted(ancestors)))
+    return tuple(output)
+
+
 def transition_aware_matrix(
     assignment: tuple[int, ...],
     predecessors: tuple[tuple[int, ...], ...],
 ) -> tuple[tuple[float, ...], ...]:
-    if sorted(assignment) != list(range(3)):
+    size = len(assignment)
+    if sorted(assignment) != list(range(size)):
         raise ValueError("assignment must be a stage permutation")
-    if len(predecessors) != 3:
+    if len(predecessors) != size:
         raise ValueError("one predecessor set is required per stage")
     rows = []
     for target in assignment:
-        row = np.full(3, -1.0, dtype=np.float64)
+        row = np.full(size, -1.0, dtype=np.float64)
         row[list(predecessors[target])] = 0.0
         row[target] = 1.0
         rows.append(tuple(float(value) for value in row))

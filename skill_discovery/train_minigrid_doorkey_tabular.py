@@ -58,6 +58,8 @@ class DoorKeyTabularConfig:
     stage_rate_gate: float = 0.80
     valid_action_mask: bool = False
     terminate_on_target: bool = False
+    target_assignment: tuple[int, ...] = (0, 1, 2, 3)
+    reward_matrix: tuple[tuple[float, ...], ...] = DOORKEY_CONTROL_MATRIX
 
     def __post_init__(self) -> None:
         if self.num_skills != len(DOORKEY_STAGES):
@@ -80,6 +82,13 @@ class DoorKeyTabularConfig:
             raise ValueError("not enough checkpoints for stability gate")
         if not 0 <= self.stage_rate_gate <= 1:
             raise ValueError("stage rate gate must be in [0, 1]")
+        if sorted(self.target_assignment) != list(range(self.num_skills)):
+            raise ValueError("target assignment must be a stage permutation")
+        matrix = np.asarray(self.reward_matrix, dtype=np.float64)
+        if matrix.shape != (self.num_skills, len(DOORKEY_STAGES)):
+            raise ValueError("reward matrix must have shape (4, 4)")
+        if not np.isfinite(matrix).all():
+            raise ValueError("reward matrix must be finite")
 
 
 def common_layout_seed(seed: int, episode: int) -> int:
@@ -189,15 +198,15 @@ def _training_action(
     return int(rng.choice(candidates))
 
 
-def final_state_success(skill: int, rollout: dict[str, object]) -> bool:
+def final_state_success(target: int, rollout: dict[str, object]) -> bool:
     carrying = rollout["carrying"]
     door_open = bool(rollout["door_open"])
     native_success = bool(rollout["native_success"])
-    if skill == 0:
+    if target == 0:
         return int(rollout["stage"]) == 0
-    if skill == 1:
+    if target == 1:
         return carrying is not None and carrying[0] == "key" and not door_open
-    if skill == 2:
+    if target == 2:
         return door_open and not native_success
     return native_success
 
@@ -214,6 +223,7 @@ def _rollout(
     frames = []
     try:
         env.reset(seed=seed)
+        target_stage = config.target_assignment[skill]
         if render:
             frames.append(env.render())
         furthest_stage = semantic_stage(env)
@@ -246,8 +256,8 @@ def _rollout(
             furthest_stage = max(furthest_stage, stage)
             option_terminated = bool(
                 config.terminate_on_target
-                and skill in {1, 2}
-                and furthest_stage == skill
+                and target_stage in {1, 2}
+                and furthest_stage == target_stage
             )
             actions.append(action)
             if render:
@@ -297,6 +307,7 @@ def evaluate_q_table(
     native_success_rates = []
     final_state_rates = []
     for skill in range(config.num_skills):
+        target_stage = config.target_assignment[skill]
         stages = []
         steps = []
         successes = []
@@ -306,18 +317,25 @@ def evaluate_q_table(
             stages.append(int(rollout["stage"]))
             steps.append(int(rollout["steps"]))
             successes.append(bool(rollout["native_success"]))
-            final_state_successes.append(final_state_success(skill, rollout))
+            final_state_successes.append(
+                final_state_success(target_stage, rollout)
+            )
         rates[skill] = np.bincount(stages, minlength=4) / len(stages)
         mean_steps.append(float(np.mean(steps)))
         native_success_rates.append(float(np.mean(successes)))
         final_state_rates.append(float(np.mean(final_state_successes)))
-    target_rates = np.diag(rates).astype(float).tolist()
+    target_rates = [
+        float(rates[skill, target])
+        for skill, target in enumerate(config.target_assignment)
+    ]
     by_stage = {
-        stage: target_rates[index] for index, stage in enumerate(DOORKEY_STAGES)
+        DOORKEY_STAGES[target]: target_rates[skill]
+        for skill, target in enumerate(config.target_assignment)
     }
+    goal_skill = config.target_assignment.index(3)
     gate = bool(
         all(rate >= config.stage_rate_gate for rate in target_rates)
-        and native_success_rates[3] >= config.stage_rate_gate
+        and native_success_rates[goal_skill] >= config.stage_rate_gate
         and (
             not config.terminate_on_target
             or all(rate >= config.stage_rate_gate for rate in final_state_rates)
@@ -326,14 +344,19 @@ def evaluate_q_table(
     return {
         "episodes_per_skill": config.eval_episodes_per_skill,
         "outcome_rates": rates.tolist(),
+        "target_assignment": list(config.target_assignment),
+        "target_assignment_names": [
+            DOORKEY_STAGES[target] for target in config.target_assignment
+        ],
         "target_stage_rates": target_rates,
         "target_rate_by_stage": by_stage,
         "native_success_rates": native_success_rates,
-        "goal_native_success_rate": native_success_rates[3],
+        "goal_skill": goal_skill,
+        "goal_native_success_rate": native_success_rates[goal_skill],
         "final_state_rates": final_state_rates,
         "final_state_rate_by_target": {
-            stage: final_state_rates[index]
-            for index, stage in enumerate(DOORKEY_STAGES)
+            DOORKEY_STAGES[target]: final_state_rates[skill]
+            for skill, target in enumerate(config.target_assignment)
         },
         "mean_episode_steps": mean_steps,
         "specialization_gate_passed": gate,
@@ -412,6 +435,7 @@ def _write_rollout_audit(
     colors = ((104, 117, 125), (40, 117, 164), (209, 112, 49), (43, 137, 95))
     manifest = []
     for skill in range(4):
+        target_stage = config.target_assignment[skill]
         rate = target_rates[skill]
         attempts = 1 if rate <= 0 else min(10_000, max(32, int(10 / rate)))
         rollout = None
@@ -426,7 +450,7 @@ def _write_rollout_audit(
                 render=True,
             )
             fallback = fallback or candidate
-            if int(candidate["stage"]) == skill:
+            if int(candidate["stage"]) == target_stage:
                 rollout = candidate
                 matched_offset = offset
                 break
@@ -444,7 +468,7 @@ def _write_rollout_audit(
         manifest.append(
             {
                 "skill": skill,
-                "target_stage": DOORKEY_STAGES[skill],
+                "target_stage": DOORKEY_STAGES[target_stage],
                 "actual_stage": DOORKEY_STAGES[actual],
                 "target_stage_found": matched_offset >= 0,
                 "matched_seed_offset": matched_offset,
@@ -475,6 +499,7 @@ def train_run(
     try:
         for episode in range(config.episodes):
             skill = episode % config.num_skills
+            target_stage = config.target_assignment[skill]
             env.reset(seed=common_layout_seed(config.seed, episode))
             furthest_stage = semantic_stage(env)
             epsilon = _epsilon(config, episode)
@@ -504,11 +529,11 @@ def train_run(
                     reward=float(native_reward),
                 )
                 furthest_stage = max(furthest_stage, stage)
-                reward = DOORKEY_CONTROL_MATRIX[skill][furthest_stage]
+                reward = config.reward_matrix[skill][furthest_stage]
                 option_terminated = bool(
                     config.terminate_on_target
-                    and skill in {1, 2}
-                    and furthest_stage == skill
+                    and target_stage in {1, 2}
+                    and furthest_stage == target_stage
                 )
                 terminal = bool(
                     terminated
@@ -571,7 +596,7 @@ def train_run(
     _write_curves(output_dir / "stage_curves.svg", evaluations)
     output = {
         "config": asdict(config),
-        "reward_matrix": DOORKEY_CONTROL_MATRIX,
+        "reward_matrix": config.reward_matrix,
         "policy_actions": DOORKEY_POLICY_ACTIONS,
         "elapsed_seconds": elapsed,
         "training_layout_seed_mode": "common_per_four_skill_cycle",
