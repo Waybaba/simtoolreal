@@ -2737,6 +2737,37 @@ Run：`gotoobject_blockwise_spread_balanced_transition_replay_rgb_object_graph_s
 > [里程碑]
 > GoToObject renderer-aware RGB object graph已经完成3-seed online substitution：384万次视觉reward查询零误判，三条学习轨迹与state-semantic版本exact equal。与此同时，严格训练稳定性仍只有1/3；因此最终结论是“视觉metric桥接成功，control算法尚不稳定”，不是“视觉skill discovery已稳定复现”。按预注册停止继续堆MiniGrid templates。
 
+## Phase 5ZR：Public Pusher-v5 Environment Gate
+
+状态：`预注册；未安装MuJoCo extra，未运行`
+
+### 目的与边界
+
+下一步采用本地Gymnasium `1.3.0`已经注册的官方`Pusher-v5`。它比Hammer简单，仍保留连续控制、fingertip-object接近、物体位移和object-goal关系；不使用IsaacLab，也不修改官方XML、camera、reward weights、frame skip或100-step time limit。
+
+本阶段只判断环境、无头RGB与状态审计接口是否可靠，**不训练policy、不拟合视觉metric、不声称任务可解**。Oracle body positions只用于验证官方reward和设计下一阶段的可达性审计，不能作为未来discovery reward输入。
+
+### 冻结协议
+
+- 依赖安装到`/home/wang100/data/conda/envs/skill-discovery`，pip cache固定为`/home/wang100/data/cache/pip`；先尝试`MUJOCO_GL=egl`。不改项目全局dependency files，不向home目录写新环境。
+- 环境固定`gym.make("Pusher-v5", render_mode="rgb_array", width=256, height=256)`。记录Gymnasium、MuJoCo、Python和GL backend版本。
+- Seeds固定`7/17/29/41/53`。每个seed生成一条由独立固定RNG采样的100-step action tape；同seed、同actions从两个新环境实例重放。
+- 每步保存23维observation、reward三项、terminated/truncated、fingertip/object/goal三组COM、action与RGB frame hash。保存每个seed的reset/mid/final联系表，人工检查arm、object与goal都清晰可见且不是黑帧或重复帧。
+- 本阶段不根据结果修改camera、resolution、seed、动作分布、reward weights或physics参数。若默认相机不能看清object/goal，environment visual gate失败，再单独预注册camera修复，不能当场换视角重算。
+
+### Gates
+
+- API gate：observation shape严格`(23,)`、action shape严格`(7,)`且范围`[-2,2]`；每条100-step tape只在第100步由TimeLimit truncated，环境本身不terminated；全程无NaN/Inf。
+- Reward gate：每一步`reward == reward_dist + reward_near + reward_ctrl`，并由post-step COM与action独立重算三项，最大绝对误差`<=1e-10`。
+- Reproducibility gate：两个新实例的reset observation、全部100步observations/rewards/flags与frame hashes exact equal；五个seeds的reset object XY至少有四个unique values。
+- RGB gate：每帧shape严格`256x256x3 uint8`，所有审计帧pixel standard deviation`>5`，每条trajectory至少两个不同frame hashes；五组reset/mid/final联系表人工确认可读。
+- Semantic-interface gate：observation末9维与`tips_arm/object/goal` COM逐值一致；reset时object-goal planar distance均`>0.17 m`。本gate只确认关系量可审计，不要求random policy接触或推到目标。
+
+只有全部gate通过，才写Phase 5ZS oracle reachability/controller计划：先证明固定state controller能产生`far -> near/contact -> moved -> goal-progress`轨迹，再收视觉数据。若环境或渲染失败，停止Pusher路线并保留原始失败，不安装另一套robotics simulator来绕过。
+
+> [大计划]
+> 先做约一分钟的版本/reset/render smoke；通过后运行五种子双实例replay并保存JSON和联系表。任何训练与learned representation都排在environment gate和下一轮oracle reachability gate之后。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
