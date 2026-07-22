@@ -11,6 +11,7 @@ import numpy as np
 from skill_discovery.train_frozenlake_skills import (
     FrozenLakeIntrinsicReward,
     FrozenLakeTrainConfig,
+    FrozenLakeVisualClusterLookup,
     _step_size,
     train_run,
 )
@@ -64,6 +65,42 @@ class FrozenLakeTrainerTest(unittest.TestCase):
         rare_reward, parts = reward_model.reward(1, 2, terminal_state=15)
         self.assertGreater(parts["coverage_reward"], 0.0)
         self.assertGreater(rare_reward, common_rewards[-1])
+
+    def test_visual_reward_uses_cluster_instead_of_outcome(self) -> None:
+        config = FrozenLakeTrainConfig(
+            objective="visual_cluster",
+            visual_lookup_path="unused.npz",
+            semantic_decay=1.0,
+        )
+        reward_model = FrozenLakeIntrinsicReward(config)
+        reward_model.reward(0, outcome=0, terminal_state=0, visual_cluster=2)
+        self.assertEqual(reward_model.semantic_counts[0].tolist(), [2.0, 2.0, 3.0])
+        self.assertEqual(reward_model.outcome_counts.tolist(), [1, 0, 0])
+        with self.assertRaises(ValueError):
+            reward_model.reward(0, outcome=0, terminal_state=0)
+
+    def test_visual_lookup_predicts_from_state_trajectory(self) -> None:
+        frame_lookup = np.zeros((3, 16, 2), dtype=np.float32)
+        frame_counts = np.zeros((3, 16), dtype=np.int64)
+        frame_lookup[0, 0] = [1.0, 0.0]
+        frame_lookup[0, 4] = [0.0, 1.0]
+        frame_lookup[1, 5] = [1.0, 1.0]
+        frame_counts[0, 0] = frame_counts[0, 4] = frame_counts[1, 5] = 1
+        expected = np.asarray([1.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+        expected /= np.linalg.norm(expected)
+        centers = np.stack((np.zeros(6), expected, np.ones(6))).astype(np.float32)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "lookup.npz"
+            np.savez_compressed(
+                path,
+                frame_lookup=frame_lookup,
+                frame_counts=frame_counts,
+                cluster_centers=centers,
+            )
+            lookup = FrozenLakeVisualClusterLookup(path)
+            self.assertEqual(lookup.predict([0, 4, 5]), 1)
+            with self.assertRaises(ValueError):
+                lookup.predict([0, 1, 5])
 
     def test_tiny_training_writes_complete_artifacts(self) -> None:
         config = FrozenLakeTrainConfig(

@@ -35,7 +35,7 @@ def _method_metrics(
     audit_outcomes: np.ndarray,
     *,
     seed: int,
-) -> tuple[dict[str, object], np.ndarray, np.ndarray]:
+) -> tuple[dict[str, object], np.ndarray, np.ndarray, np.ndarray]:
     import sklearn
     from sklearn.cluster import KMeans
     from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
@@ -98,7 +98,7 @@ def _method_metrics(
             np.all(train_sizes > 0) and np.all(audit_sizes > 0)
         ),
     }
-    return output, train_clusters, audit_clusters
+    return output, train_clusters, audit_clusters, model.cluster_centers_
 
 
 def _write_chart(path: Path, methods: dict[str, dict[str, object]]) -> None:
@@ -174,7 +174,7 @@ def cluster_embeddings(
     methods = {}
     assignments = {}
     for name, representation in features.items():
-        metrics, train_clusters, audit_clusters = _method_metrics(
+        metrics, train_clusters, audit_clusters, centers = _method_metrics(
             representation[train_indices],
             representation[audit_indices],
             outcomes[train_indices],
@@ -184,6 +184,7 @@ def cluster_embeddings(
         methods[name] = metrics
         assignments[f"{name}_train"] = train_clusters
         assignments[f"{name}_audit"] = audit_clusters
+        assignments[f"{name}_centers"] = centers
     raw_accuracy = methods["raw_pixels"]["audit_aligned_accuracy"]
     dinov2_accuracy = methods["dinov2_small"]["audit_aligned_accuracy"]
     output = {

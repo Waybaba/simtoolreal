@@ -5,7 +5,7 @@
 >
 > 当前阶段：Phase 3 fixed-layout gate 已通过但 layout generalization 失败；Phase 4A 官方 MiniGrid 环境审计已通过，Phase 4B 正在定位长时序 PPO 的部署失败。
 >
-> 当前动作：Phase 5B DINOv2 K=3 clustering gate 已通过，audit accuracy 0.740、NMI 0.704；train clusters 完美平衡。下一步先构建 frozen cluster lookup cache，确认无需在线 GPU 或 outcome labels 即可从 state trajectory 重建 cluster id。
+> 当前动作：Phase 5C seed-7 visual-cluster reward gate 已通过。下一步不重复跑等价 multi-seed，先处理 audit style shift 下 safe recall 仅 0.219 的 representation gap。
 
 ## 一眼看完整流程
 
@@ -1154,13 +1154,48 @@ Run：`frozenlake_visual_clusters_20260722_0842`
 
 ## Phase 5C：Frozen Visual Cluster Reward Bridge
 
-状态：`lookup cache 计划已冻结，训练尚未开始`
+状态：`seed-7 visual-cluster reward gate 通过`
 
 1. 从 train dataset 的 frame embeddings 构建 finite lookup：active safe tile、terminal hole tile、terminal goal 各自的 frozen DINO frame vector；保存 KMeans centers。
 2. 用 state trajectory 的 start/middle/final keys 查询三帧、拼接并预测 cluster id；不在线 render/DINO，不读取 outcome label。
 3. 先在完整 cached train dataset 重建 cluster assignments，要求与直接 DINO KMeans prediction 一致率 `>=0.99`。
 4. 通过后给 FrozenLake trainer 新增 `visual_cluster` objective：reward 只使用预测 cluster id 做 plain DIAYN，native/semantic outcome 只用于 evaluation。
 5. 第一轮沿用 Phase 4D seed 7、100k visit-decay 与 class-specific gates。若失败，记录 visual-cluster reward gap，不用 oracle label修补 cluster。
+
+### Phase 5C Lookup 结果：通过
+
+Run：`frozenlake_visual_lookup_20260722_0905`；finite-key audited rerun：`frozenlake_visual_lookup_audited_20260722_062534`
+
+- Coverage：11 个 active safe states、holes `5/7/11/12`、goal `15` 全部存在。
+- Lookup shape `3 x 16 x 384`，cluster centers `3 x 1152`；未覆盖项保持空并由 coverage gate 阻止使用。
+- 1,152 train trajectories 重建 cluster agreement `1.0000`；direct-vs-lookup trajectory cosine mean/min `0.9990 / 0.9955`。
+- Cache 只含 rendered-state DINO vectors 与无标签 KMeans centers，不保存 outcome-to-cluster mapping。
+
+### Phase 5C Seed-7 Visual Cluster Training 计划
+
+- Objective 新名称 `visual_cluster`：每个 episode 用 state trajectory 查询 frozen start/middle/final embeddings，最近 center 产生 cluster id，再按 plain DIAYN `log q(skill|cluster)` 奖励。
+- Terminal frame type 从 renderer state key（active/hole/goal）查询，不把 semantic outcome id 传给 reward model；outcome/native reward 只在 evaluation 与审计计数中使用。
+- 完全复用 Phase 4D Plain Semantic seed 7：slippery 4x4、100k、visit-decay、epsilon 0.8、CRN 1024 eval、safe/hole/goal gates `0.95/0.95/0.30`。
+- 若 final + last-5 通过，视觉 cluster 可以替代本环境 oracle label；若失败，不用 outcome mapping修复 reward，转向 reference calibration。
+
+### Phase 5C Seed-7 Visual Cluster 结果：通过
+
+Run：`frozenlake_slippery_visual_cluster_visit_decay_seed7_20260722_062028`
+
+- Final safe/hole/goal matched rates 为 `1.000 / 1.000 / 0.3721`；goal 达到 DP ceiling `0.3733` 的 99.7%。
+- 从 65k 到 100k 的 8 个 CRN checkpoints 连续通过；last-5 rates 均为 `1.000 / 1.000 / 0.3848`，final 与 stability gates 都为 true。
+- 100k 训练 episode 的 predicted cluster counts 为 `19,857 / 6,001 / 74,142`；reward model 没有读取 outcome/native reward。
+- 代表 rollout 分别真实 timeout、到达 goal、落入 hole，三项都找到 assigned outcome，不存在失败视频冒充成功。
+- 穷举全部 176 种可用 start/middle/final key 后，safe/hole/goal 分别只映射到 cluster `0/2/1`；三个集合互异。
+- 与已有相同 seed/config 的 Plain Semantic Q-table 逐元素完全相同，最大绝对差 `0.0`。因此不重复运行等价的 4 个 seeds；已有 semantic 4/5 结果同时说明该目标仍有 symmetry-collapse 风险。
+
+![FrozenLake visual-cluster reward rollout audit](outputs/skill_discovery/frozenlake_slippery_training/frozenlake_slippery_visual_cluster_visit_decay_seed7_20260722_062028/policy_rollout_audit.png)
+
+> [结果]
+> Frozen DINO+KMeans cluster 在原始 renderer 内可以无 outcome label 地替代 semantic class reward，并达到 stochastic control ceiling。但 finite lookup 已严格恢复 outcome partition，这还是受控桥接，不是开放视觉或跨 style 的解决方案。
+
+> [计划]
+> 下一步针对 audit safe recall `0.219` 做 reference calibration：只在 frozen embeddings 上使用少量 train-style reference trajectories，不重训 encoder；先预注册 held-out audit gate，再决定是否值得迁移到更复杂图形环境。
 
 ## Phase 6：迁移到 Hammer
 
@@ -1435,6 +1470,13 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - 限制：audit safe recall 0.219，style shift 会把 safe 并入 goal cluster。
 - 决定：先从 cached frame embeddings 构建无在线 GPU lookup，并要求重建 cluster assignment >=0.99；通过后才运行 visual-cluster DIAYN。
 
+### D-027：Visual Cluster Reward 通过，但只视为 Renderer 内桥接
+
+- 日期：2026-07-22
+- Seed-7 final safe/hole/goal 为 `1.000/1.000/0.372`，last-5 与完整 signal gate 通过。
+- 176 种 finite keys 全部形成 outcome 到 cluster 的一一映射；visual 与 semantic Q-table 完全相同。
+- 决定：不重复计算数学等价的 multi-seed；不把结果外推为跨 style 视觉理解。下一步用少量 frozen reference calibration 处理 audit safe recall 0.219。
+
 ## 实验日志
 
 ### 2026-07-22：项目启动
@@ -1628,3 +1670,14 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 > [计划]
 > 构建 start/middle/final state-to-DINO lookup 与 KMeans center cache，先要求 cached train assignment 重建 >=0.99，再开始 seed-7 visual-cluster reward。
+
+### 2026-07-22：Visual Cluster Reward Bridge 通过
+
+> [结果]
+> Lookup reconstruction 1.0，seed-7 100k visual-cluster DIAYN 的 final 与 last-5 gates 都通过；数值和三条 rollout 画面一致。
+
+> [问题]
+> 穷举 finite keys 后 visual clusters 与 outcomes 严格一一对应，Q-table 也与 semantic run 完全相同。它证明视觉表示可接入 reward，但没有解决此前记录的 audit style shift。
+
+> [计划]
+> 下一步冻结 DINO encoder，只用少量 train-style reference trajectories 校准距离/cluster，并在未参与校准的 audit seeds 上评价 safe/hole/goal recall；不先增加物理或控制复杂度。

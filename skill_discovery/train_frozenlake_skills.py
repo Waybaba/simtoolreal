@@ -13,6 +13,8 @@ from pathlib import Path
 
 import numpy as np
 
+from skill_discovery.build_frozenlake_visual_lookup import trajectory_frame_keys
+from skill_discovery.encode_frozenlake_dinov2 import compose_trajectory_embeddings
 from skill_discovery.frozenlake import (
     FROZENLAKE_OUTCOMES,
     FrozenLakeConfig,
@@ -42,6 +44,7 @@ class FrozenLakeTrainConfig:
     eval_episodes_per_skill: int = 32
     class_rate_gate: float = 0.95
     outcome_rate_gates: tuple[float, float, float] | None = None
+    visual_lookup_path: str | None = None
     lake: FrozenLakeConfig = FrozenLakeConfig()
 
     def __post_init__(self) -> None:
@@ -51,6 +54,7 @@ class FrozenLakeTrainConfig:
             "semantic",
             "semantic_spread",
             "semantic_balanced",
+            "visual_cluster",
         }:
             raise ValueError("unknown objective")
         if self.num_skills != len(FROZENLAKE_OUTCOMES):
@@ -66,6 +70,8 @@ class FrozenLakeTrainConfig:
                 raise ValueError("one rate gate is required per outcome")
             if any(not 0 <= gate <= 1 for gate in self.outcome_rate_gates):
                 raise ValueError("outcome rate gates must be in [0, 1]")
+        if self.objective == "visual_cluster" and self.visual_lookup_path is None:
+            raise ValueError("visual_cluster objective requires a lookup cache")
 
     def resolved_outcome_rate_gates(self) -> tuple[float, float, float]:
         if self.outcome_rate_gates is not None:
@@ -93,6 +99,7 @@ class FrozenLakeIntrinsicReward:
         skill: int,
         outcome: int,
         terminal_state: int,
+        visual_cluster: int | None = None,
     ) -> tuple[float, dict[str, float]]:
         self.episode_counts[skill] += 1
         self.outcome_counts[outcome] += 1
@@ -120,11 +127,16 @@ class FrozenLakeIntrinsicReward:
                 "coverage_reward": 0.0,
             }
 
+        semantic_class = outcome
+        if self.config.objective == "visual_cluster":
+            if visual_cluster is None:
+                raise ValueError("visual cluster reward requires a predicted cluster")
+            semantic_class = visual_cluster
         self.semantic_counts *= self.config.semantic_decay
-        self.semantic_counts[skill, outcome] += 1.0
+        self.semantic_counts[skill, semantic_class] += 1.0
         posterior = (
-            self.semantic_counts[skill, outcome]
-            / self.semantic_counts[:, outcome].sum()
+            self.semantic_counts[skill, semantic_class]
+            / self.semantic_counts[:, semantic_class].sum()
         )
         diayn_reward = math.log(
             max(posterior * self.config.num_skills, 1.0e-8)
@@ -132,7 +144,7 @@ class FrozenLakeIntrinsicReward:
         coverage_reward = 0.0
         if self.config.objective == "semantic_spread":
             totals = self.semantic_counts.sum(axis=0)
-            probability = totals[outcome] / totals.sum()
+            probability = totals[semantic_class] / totals.sum()
             coverage_reward = -math.log(
                 max(len(FROZENLAKE_OUTCOMES) * probability, 1.0e-8)
             )
@@ -153,6 +165,27 @@ class FrozenLakeIntrinsicReward:
             if self.config.objective == "semantic_balanced"
             else None,
         }
+
+
+class FrozenLakeVisualClusterLookup:
+    def __init__(self, path: str | Path):
+        data = np.load(path)
+        self.frame_lookup = data["frame_lookup"].astype(np.float32)
+        self.frame_counts = data["frame_counts"].astype(np.int64)
+        self.cluster_centers = data["cluster_centers"].astype(np.float32)
+
+    def predict(self, states: list[int]) -> int:
+        state_array = np.asarray(states, dtype=np.int64)
+        length = len(state_array) - 1
+        keys = trajectory_frame_keys(state_array, length)
+        if any(self.frame_counts[frame_type, state] <= 0 for frame_type, state in keys):
+            raise ValueError(f"visual lookup key is not populated: {keys}")
+        frames = np.stack(
+            [self.frame_lookup[frame_type, state] for frame_type, state in keys]
+        )
+        trajectory = compose_trajectory_embeddings(frames, 1)[0]
+        distances = np.sum((self.cluster_centers - trajectory) ** 2, axis=1)
+        return int(np.argmin(distances))
 
 
 def _epsilon(config: FrozenLakeTrainConfig, episode: int) -> float:
@@ -412,11 +445,20 @@ def train_run(
     q_table = rng.normal(0.0, 1.0e-4, size=(config.num_skills, 16, 4))
     visit_counts = np.zeros_like(q_table, dtype=np.int64)
     reward_model = FrozenLakeIntrinsicReward(config)
+    visual_lookup = (
+        FrozenLakeVisualClusterLookup(config.visual_lookup_path)
+        if config.objective == "visual_cluster"
+        else None
+    )
     training_counts = np.zeros(
         (config.num_skills, len(FROZENLAKE_OUTCOMES)),
         dtype=np.int64,
     )
     reward_sums = {"diayn_reward": 0.0, "coverage_reward": 0.0}
+    training_visual_cluster_counts = np.zeros(
+        len(FROZENLAKE_OUTCOMES),
+        dtype=np.int64,
+    )
     evaluations = []
     env = make_frozenlake(config.lake)
     started = time.monotonic()
@@ -424,6 +466,7 @@ def train_run(
         for episode in range(config.episodes):
             skill = episode % config.num_skills
             state, _ = env.reset(seed=config.seed * 1_000_000 + episode)
+            state_history = [int(state)]
             terminated = truncated = False
             epsilon = _epsilon(config, episode)
             while not (terminated or truncated):
@@ -432,6 +475,7 @@ def train_run(
                 else:
                     action = _policy_action(q_table[skill, int(state)], rng)
                 next_state, _, terminated, truncated, _ = env.step(action)
+                state_history.append(int(next_state))
                 if terminated or truncated:
                     outcome = classify_outcome(
                         env,
@@ -439,10 +483,18 @@ def train_run(
                         terminated=terminated,
                         truncated=truncated,
                     )
+                    visual_cluster = (
+                        visual_lookup.predict(state_history)
+                        if visual_lookup is not None
+                        else None
+                    )
+                    if visual_cluster is not None:
+                        training_visual_cluster_counts[visual_cluster] += 1
                     reward, parts = reward_model.reward(
                         skill,
                         outcome,
                         int(next_state),
+                        visual_cluster=visual_cluster,
                     )
                     target = reward
                     training_counts[skill, outcome] += 1
@@ -492,6 +544,9 @@ def train_run(
         "elapsed_seconds": elapsed,
         "reward_model": reward_model.state_dict(),
         "training_outcome_counts": training_counts.tolist(),
+        "training_visual_cluster_counts": training_visual_cluster_counts.tolist()
+        if visual_lookup is not None
+        else None,
         "reward_sums": reward_sums,
         "visit_counts": {
             "nonzero": int(np.count_nonzero(visit_counts)),
@@ -525,6 +580,7 @@ def main() -> None:
             "semantic",
             "semantic_spread",
             "semantic_balanced",
+            "visual_cluster",
         ),
         default="semantic_spread",
     )
@@ -539,6 +595,7 @@ def main() -> None:
     parser.add_argument("--eval-episodes", type=int, default=32)
     parser.add_argument("--epsilon-decay-fraction", type=float, default=0.90)
     parser.add_argument("--slippery", action="store_true")
+    parser.add_argument("--visual-lookup", type=Path)
     parser.add_argument(
         "--outcome-rate-gates",
         type=float,
@@ -559,6 +616,9 @@ def main() -> None:
         if args.outcome_rate_gates is not None
         else None,
         lake=FrozenLakeConfig(is_slippery=args.slippery),
+        visual_lookup_path=str(args.visual_lookup.resolve())
+        if args.visual_lookup is not None
+        else None,
     )
     run_id = (
         f"frozenlake_{config.objective}_seed{config.seed}_"
