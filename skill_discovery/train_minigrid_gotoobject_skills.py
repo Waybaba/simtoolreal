@@ -35,6 +35,8 @@ class GoToObjectTrainConfig:
     episodes: int = 100_000
     horizon: int = 64
     gamma: float = 0.99
+    learning_rate_mode: str = "visit_power"
+    constant_learning_rate: float = 0.1
     epsilon_start: float = 1.0
     epsilon_end: float = 0.0
     epsilon_decay_fraction: float = 0.8
@@ -56,6 +58,10 @@ class GoToObjectTrainConfig:
             raise ValueError("unknown objective")
         if self.reward_timing not in {"exact_terminal", "occupancy"}:
             raise ValueError("unknown reward timing")
+        if self.learning_rate_mode not in {"visit_power", "constant"}:
+            raise ValueError("unknown learning rate mode")
+        if not 0 < self.constant_learning_rate <= 1:
+            raise ValueError("constant learning rate must be in (0, 1]")
         if self.num_skills != len(GOTOOBJECT_STAGES):
             raise ValueError("GoToObject probe is fixed to three skills")
         if self.episodes <= 0 or self.horizon <= 0 or self.eval_interval <= 0:
@@ -166,6 +172,12 @@ def _transition_reward(
     if config.reward_timing == "occupancy" or terminal:
         return reward_model.reward(skill, stage)
     return 0.0, {"diayn_reward": 0.0, "coverage_reward": 0.0}
+
+
+def _learning_rate(config: GoToObjectTrainConfig, visits: float) -> float:
+    if config.learning_rate_mode == "constant":
+        return config.constant_learning_rate
+    return float(visits**-0.6)
 
 
 def _values(
@@ -424,7 +436,10 @@ def train_run(
                         q_table, next_key, create=True
                     )[skill].max()
                 visit_values[skill, action_index] += 1
-                step_size = float(visit_values[skill, action_index] ** -0.6)
+                step_size = _learning_rate(
+                    config,
+                    float(visit_values[skill, action_index]),
+                )
                 q_values[skill, action_index] += step_size * (
                     target - q_values[skill, action_index]
                 )
@@ -515,6 +530,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--episodes", type=int, default=100_000)
     parser.add_argument("--horizon", type=int, default=64)
+    parser.add_argument(
+        "--learning-rate-mode",
+        choices=("visit_power", "constant"),
+        default="visit_power",
+    )
+    parser.add_argument("--constant-learning-rate", type=float, default=0.1)
     parser.add_argument("--eval-interval", type=int, default=5_000)
     parser.add_argument("--eval-episodes", type=int, default=1_024)
     parser.add_argument("--stability-checkpoints", type=int, default=5)
@@ -526,6 +547,8 @@ def main() -> None:
         seed=args.seed,
         episodes=args.episodes,
         horizon=args.horizon,
+        learning_rate_mode=args.learning_rate_mode,
+        constant_learning_rate=args.constant_learning_rate,
         eval_interval=args.eval_interval,
         eval_episodes_per_skill=args.eval_episodes,
         stability_checkpoints=args.stability_checkpoints,

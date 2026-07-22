@@ -1609,7 +1609,7 @@ Run：`gotoobject_balanced_occupancy_seed7_formal_20260722_080420`
 
 ## Phase 5L：GoToObject Discovery-objective Comparison
 
-状态：`20k comparison 计划已冻结，尚未运行`
+状态：`20k comparison 完成；random按预期失败，两个discovery objectives均未过门`
 
 ### 唯一变量与配置
 
@@ -1623,6 +1623,36 @@ Run：`gotoobject_balanced_occupancy_seed7_formal_20260722_080420`
 - `random`是negative control，预期不能三类同时达到0.90；若通过，说明evaluation/class定义存在泄漏，停止解释其他objectives。
 - `semantic`与`semantic_spread`各自通过门控均为independent-final三类 `>=0.90` 且last-3全部通过。只有通过者才晋级100k formal；若两者都通过，优先比较最小stage rate和checkpoint稳定性，不追加调参。
 - 若两者都失败，不延长预算；先审计online reward的按skill/stage counts、reward sums和策略outcome，判断是自然stage imbalance还是non-stationary discriminator credit。
+
+### 20k Comparison 结果
+
+| Objective | Far | Adjacent | Carried | Min stage | Gate |
+| --- | ---: | ---: | ---: | ---: | :---: |
+| Random | 0.648 | 0.352 | 0.000 | 0.000 | expected fail |
+| Semantic | 0.854 | 0.820 | 0.299 | 0.299 | fail |
+| Semantic spread | 0.553 | 0.691 | 0.789 | 0.553 | fail |
+
+- Runs：`gotoobject_random_occupancy_seed7_diagnostic_20260722_084019`、`gotoobject_semantic_occupancy_seed7_diagnostic_20260722_084026`、`gotoobject_semantic_spread_occupancy_seed7_diagnostic_20260722_084035`。三组均为20k且正常完成。
+- Random三个skills得到完全相同的outcome matrix，carried为0；negative control按预期失败，evaluation没有明显泄漏。
+- Natural random stage visits约为far/adjacent/carried `56%/30%/14%`。Plain semantic变为 `49%/31%/20%`；spread进一步变为 `30%/38%/33%`，所以coverage term确实修正了总体stage imbalance。
+- Plain semantic最终discriminator posterior已经明显专门化：assigned adjacent/far/carried约为 `0.986/0.629/0.950`，但greedy policy matched rates只有 `0.820/0.854/0.299`。
+- Spread的最终posterior同样清晰，且last-3 carried `0.777->0.799->0.826`、adjacent `0.664->0.738->0.758`；reward/classifier在工作，但policy values没有及时跟上变化后的online reward。
+
+![Plain semantic 20k rollout audit](outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_semantic_occupancy_seed7_diagnostic_20260722_084026/policy_rollout_audit.png)
+
+![Semantic spread 20k rollout audit](outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_semantic_spread_occupancy_seed7_diagnostic_20260722_084035/policy_rollout_audit.png)
+
+> [失败记录]
+> 两个discovery objectives均未过预注册gate，因此不直接延长到100k。Stage coverage和posterior specialization已出现，主要剩余问题是non-stationary discriminator reward配合持续衰减的`N^-0.6` Q step size，使早期旧reward长期留在Q values中。
+
+## Phase 5M：Constant-step Online-reward Diagnostic
+
+状态：`20k单变量干预计划已冻结，尚未运行`
+
+- 只重跑`semantic`和`semantic_spread`；random negative control不重复。
+- 固定Phase 5L的environment、occupancy reward、online counts/decay、state、actions、seed、20k budget、epsilon和evaluation。唯一变化是Q update step size从每个state-action visit的 `N^-0.6` 改为constant `alpha=0.1`，让values能跟踪仍在变化的online reward。
+- 两组可并行。门控不变：independent-final far/adjacent/carried各 `>=0.90`，且last-3 checkpoints全部通过。
+- 若通过者存在，再晋级100k formal；若两者都失败，不扫描alpha，也不加预算，检查Q/reward scale与posterior-reward consistency。
 
 ## Phase 6：迁移到 Hammer
 

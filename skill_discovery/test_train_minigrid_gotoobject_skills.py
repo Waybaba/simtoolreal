@@ -10,6 +10,7 @@ from skill_discovery.minigrid_gotoobject import make_gotoobject
 from skill_discovery.train_minigrid_gotoobject_skills import (
     GoToObjectReward,
     GoToObjectTrainConfig,
+    _learning_rate,
     _transition_reward,
     compact_relation_key,
     train_run,
@@ -17,6 +18,17 @@ from skill_discovery.train_minigrid_gotoobject_skills import (
 
 
 class GoToObjectSkillTrainerTest(unittest.TestCase):
+    def test_learning_rate_modes(self) -> None:
+        visit_config = GoToObjectTrainConfig(episodes=1)
+        self.assertAlmostEqual(_learning_rate(visit_config, 4.0), 4.0**-0.6)
+        constant_config = GoToObjectTrainConfig(
+            learning_rate_mode="constant",
+            constant_learning_rate=0.17,
+            episodes=1,
+        )
+        self.assertEqual(_learning_rate(constant_config, 1.0), 0.17)
+        self.assertEqual(_learning_rate(constant_config, 10_000.0), 0.17)
+
     def test_reward_timing_preserves_terminal_default(self) -> None:
         terminal_config = GoToObjectTrainConfig(episodes=1)
         terminal_reward = GoToObjectReward(terminal_config)
