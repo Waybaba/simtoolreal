@@ -3,9 +3,9 @@
 > [当前状态]
 > 分支：`codex/skill-discovery`
 >
-> 当前阶段：轻量环境的symbolic discovery/control链已建立；DoorKey 5x5 online discovery三种子通过，8x8与neural-control扩展失败。Frozen DINO current通过独立frame gate，但完整sequence DAG gate因door误分类形成环而失败。
+> 当前阶段：轻量环境的symbolic discovery/control链已建立；DoorKey 5x5 online discovery三种子通过，8x8与neural-control扩展失败。Frozen DINO current的raw sequence graph失败，但无标签causal ordered-cluster decoder在fresh sequences上通过。
 >
-> 当前动作：Phase 5ZJ已经按预注册停止online visual reward。下一步必须提出新的、使用全新groups验证的表示或时序方法；不在失败数据上调threshold、refit center或用oracle修图，Hammer继续后移。
+> 当前动作：Phase 5ZK允许进入on-demand visual lookup，但尚未接入online discovery。下一步必须先冻结visual-reward training协议，并继续把policy observation与最终评价中的oracle/compact state边界写清楚；Hammer继续后移。
 
 ## 一眼看完整流程
 
@@ -2443,7 +2443,7 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 
 ## Phase 5ZK：Unlabeled Causal Ordered-cluster Decoder
 
-状态：`fresh数据生成前协议冻结，尚未运行`
+状态：`fresh完整运行通过`
 
 ### 新假设与边界
 
@@ -2464,6 +2464,31 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 - 四种target skills的decoded final-state rate各 `>=0.80`；native goal terminal decoded-goal recall `>=0.80`；target非goal的三类sequences中，任意时刻误进入decoded goal的sequence比例 `<=0.05`。
 - 所有fresh resets必须decoded为root，四个decoded stages均非空，三条相邻stage transitions各至少25次。因果规则本身保证无回退，因此该结构项不能替代上面的oracle audit metrics。
 - 若全部通过，下一阶段才允许把causal decoded stage接入online discovery lookup；若失败，停止DoorKey视觉路线，不在groups 117/127上改score、tie break、decoder或门槛。
+
+### 完整运行结果
+
+- Fresh sequence data：`doorkey5_policy_sequences_fresh_20260722_130955`
+- Causal decoder audit：`doorkey5_causal_decoder_20260722_131027`
+- Fresh groups 117/127共1,024条sequences、21,818个state occurrences；72个unique states的stage counts仍为48/13/9/2，256/256 goal sequences native success，data与人工视觉gate通过。
+- Calibration只读取Phase 5ZJ raw cluster sequences。六个root-first排列中 `[2,0,3,1]` 的 `forward-backward=1536-124=1412` 最高，因此冻结为navigation/key/door/goal的无标签顺序；oracle labels未参与选择。
+- Fresh raw hard cluster仍重复door jitter：overall accuracy 0.988，door recall 0.816。因果decoder只做“观察到下一个cluster则前进一步，否则保持”，没有future frame、skill ID、native reward或oracle correction。
+
+| Fresh primary metric | Result | Gate |
+| --- | ---: | :---: |
+| Overall occurrence accuracy | 0.9948 | pass |
+| Nav / key / door / goal recall | 1.000 / 1.000 / 0.919 / 1.000 | pass |
+| Groups 117 / 127 accuracy | 0.9950 / 0.9946 | pass |
+| Four target final-state rates | 1.000 / 1.000 / 1.000 / 1.000 | pass |
+| Native goal terminal recall | 1.000 | pass |
+| Non-goal sequence false-goal rate | 0.000 | pass |
+| Adjacent decoded transitions | 768 / 512 / 256 | pass |
+
+![DoorKey causal decoder fresh sequence data](outputs/skill_discovery/minigrid_doorkey_visual/doorkey5_policy_sequences_fresh_20260722_130955/unique_state_manual_audit.png)
+
+![DoorKey causal decoder fresh gate](outputs/skill_discovery/minigrid_doorkey_visual/doorkey5_causal_decoder_20260722_131027/causal_decoder_audit.svg)
+
+> [里程碑]
+> Phase 5ZK完整fresh gate通过：无标签transition mass恢复了正确cluster order，严格因果、不可回退且不可跨级的decoder消除了door处的结构性反向边，并在新sequence seeds上保持高accuracy与零false-goal。支持的结论是sequence-native inductive bias对该有限、不可逆四阶段环境有效；它不推翻5ZJ raw graph失败，也不证明对可逆skill、8x8 scale、开放视觉分布或Hammer有效。
 
 ## Phase 6：迁移到 Hammer
 
