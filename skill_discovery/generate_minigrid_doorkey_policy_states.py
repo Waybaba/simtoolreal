@@ -301,11 +301,13 @@ def generate_policy_state_dataset(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-run", type=Path, required=True)
+    parser.add_argument("--generation-groups", type=int, nargs="+", default=(57, 67))
     parser.add_argument("--layouts-per-group", type=int, default=256)
     parser.add_argument("--samples-per-group-stage", type=int, default=128)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     audit = PolicyStateDatasetConfig(
+        generation_groups=tuple(args.generation_groups),
         layouts_per_group=args.layouts_per_group,
         samples_per_group_stage=args.samples_per_group_stage,
     )

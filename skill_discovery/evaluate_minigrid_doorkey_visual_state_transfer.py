@@ -162,11 +162,14 @@ def evaluate_transfer(
     model_id: str = MODEL_ID,
     batch_size: int = 64,
     device: str = "cuda:0",
+    selected_representation: str = "dinov2_temporal_delta",
 ) -> dict[str, object]:
     import torch
     import transformers
     from transformers import AutoImageProcessor, AutoModel
 
+    if selected_representation not in DINOV2_SELECTION_PRIORITY:
+        raise ValueError("selected representation must be a frozen DINO method")
     output_dir.mkdir(parents=True, exist_ok=False)
     with np.load(dataset_path) as data:
         frames = data["frames"].astype(np.uint8)
@@ -230,7 +233,7 @@ def evaluate_transfer(
         )
         predictions = row.pop("predictions")
         row["frozen_transfer_gate_passed"] = bool(
-            name == "dinov2_temporal_delta"
+            name == selected_representation
             and row["accuracy"] >= 0.85
             and min(row["recall_by_stage"].values()) >= 0.75
             and min(
@@ -243,7 +246,7 @@ def evaluate_transfer(
         methods[name] = row
         assignments[f"{name}_clusters"] = clusters
         assignments[f"{name}_predictions"] = predictions
-    selected = "dinov2_temporal_delta"
+    selected = selected_representation
     output = {
         "dataset": str(dataset_path.resolve()),
         "cluster_metrics": str(cluster_metrics_path.resolve()),
@@ -299,6 +302,11 @@ def main() -> None:
     parser.add_argument("--model-id", default=MODEL_ID)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--selected-representation",
+        choices=DINOV2_SELECTION_PRIORITY,
+        default="dinov2_temporal_delta",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     output = evaluate_transfer(
@@ -309,6 +317,7 @@ def main() -> None:
         model_id=args.model_id,
         batch_size=args.batch_size,
         device=args.device,
+        selected_representation=args.selected_representation,
     )
     print(
         json.dumps(
