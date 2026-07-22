@@ -77,6 +77,20 @@ def predict_with_rejection(
     return predicted, nearest_distances
 
 
+def predict_nearest(
+    features: np.ndarray,
+    reference_features: np.ndarray,
+    reference_classes: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    rows = np.asarray(features, dtype=np.float64)
+    reference = np.asarray(reference_features, dtype=np.float64)
+    distances = np.square(rows[:, None] - reference[None]).sum(axis=2)
+    nearest = np.argmin(distances, axis=1)
+    predicted = reference_classes[nearest].astype(np.int8)
+    nearest_distances = distances[np.arange(len(rows)), nearest]
+    return predicted, nearest_distances
+
+
 def oracle_relation(next_state: np.ndarray, terminated: bool) -> int:
     matches = [
         class_index
@@ -95,7 +109,7 @@ def _flush_batch(
     background: np.ndarray,
     reference_features: np.ndarray,
     reference_classes: np.ndarray,
-    thresholds: np.ndarray,
+    thresholds: np.ndarray | None,
     predictions: list[np.ndarray],
     distances: list[np.ndarray],
     all_oracle: list[np.ndarray],
@@ -106,9 +120,14 @@ def _flush_batch(
         return
     batch = np.stack(frames).astype(np.uint8)
     features, _ = car_x_pair_features(batch, background)
-    predicted, nearest_distances = predict_with_rejection(
-        features, reference_features, reference_classes, thresholds
-    )
+    if thresholds is None:
+        predicted, nearest_distances = predict_nearest(
+            features, reference_features, reference_classes
+        )
+    else:
+        predicted, nearest_distances = predict_with_rejection(
+            features, reference_features, reference_classes, thresholds
+        )
     oracle = np.asarray(oracle_labels, dtype=np.int8)
     source = np.asarray(sources, dtype=np.int8)
     predictions.append(predicted)
@@ -135,7 +154,7 @@ def rollout_worker(
     background: np.ndarray,
     reference_features: np.ndarray,
     reference_classes: np.ndarray,
-    thresholds: np.ndarray,
+    thresholds: np.ndarray | None,
 ) -> dict[str, object]:
     env = gym.make("MountainCarContinuous-v0", render_mode="rgb_array")
     action_rng = np.random.default_rng(config.action_seed + worker_index)

@@ -3006,7 +3006,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/rollout_rejection_20260722
 
 ## Phase 5ZX：Explicit None-class Paired Deployment
 
-状态：`预注册；未采集none data`
+状态：`已完成；balanced gate失败，未运行natural audit`
 
 ### Frozen None Dataset
 
@@ -3023,6 +3023,21 @@ Run：`outputs/skill_discovery/mountaincar_continuous/rollout_rejection_20260722
 - Natural deployment gate保持：四relation macro `>=0.95`、各`>=0.90`、goal `>=0.95`；none recall `>=0.90`（即总FPR `<=0.10`）、none->goal `<=0.01`、五个predicted classes均非空。
 
 若通过，下一步才允许visual relation reward control smoke。失败时保留五类结果，下一候选只能预注册按position/motion regime分层的none data；不增加nearest-neighbor margin、不重新采natural seeds、不调feature。
+
+### Phase 5ZX 结果：Uniform None 未覆盖关系边界
+
+None dataset：`outputs/skill_discovery/mountaincar_continuous/none_class_dataset_20260722_170843`
+
+Five-class audit：`outputs/skill_discovery/mountaincar_continuous/explicit_none_20260722_171136`
+
+- None reference/audit各256，proposal与seeds严格使用预注册值。两侧各256个unique pair hashes，跨split及与原四类relation hashes均零重叠；predicate、RGB shape与finite checks通过，联系表人工通过。
+- 冻结Phase 5ZV background与三维car-motion feature后，五类balanced audit的accuracy/macro recall均为`0.9734`，低于预注册`0.98`。
+- 四个relations recall为`0.988/0.988/0.996/0.988`；决定性失败为none recall仅`0.906`，低于每类`0.95`门槛。256个none中232个正确，8/6/10个分别误报left/valley/right，none->goal为0。
+- 因balanced gate先验失败，程序按协议没有运行61,382-transition natural audit；没有使用natural labels修改采样、feature或classifier。
+- 结论：把uniform none作为第五类已大幅缩小四正类support的吸收范围，但uniform state/action proposal对关系边界附近覆盖不足。下一候选只能先预注册position/motion分层的none reference/audit；不调1-NN margin、正类数据、RGB feature或natural seeds。
+
+> [里程碑]
+> 显式none方向是有效但尚未达部署门槛的修复：balanced none recall从“无none reference”变为0.906，四正类仍全部接近0.99，但离冻结的0.95最低类门槛还有4.4个百分点。Phase 5ZX失败，不接online reward。
 
 > [大计划]
 > CPU先生成512个none pairs并人工看联系表；随后跑balanced five-class gate。两者通过才花约4分钟做paired natural rollout；长命令继续按约300秒等待。
@@ -3495,6 +3510,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：61,382 natural transitions，四relations均有至少128 positives、none 44,260；max-LOO threshold未使用rollout labels。
 - 结果：relation macro 0.959、goal recall 0.961、none->goal 0；但right recall 0.895，none总FPR 0.672，28,798个none被误报valley。
 - 决定：rejection gate失败，不接policy reward。下一唯一候选是显式balanced`none` reference class，并保留同一natural rollout协议做paired复测。
+
+### D-042：Uniform Explicit None 在 Balanced Gate 失败
+
+- 日期：2026-07-22
+- 证据：none reference/audit各256且hash完全隔离；五类balanced accuracy/macro为0.9734。
+- 结果：四正类recall仍为0.988/0.988/0.996/0.988，但none recall仅0.906；24/256个none被left/valley/right吸收，none->goal为0。
+- 决定：按预注册顺序停止natural rerun，不接reward。下一唯一候选为position/motion regime分层none；不能从natural confusion挑样本，也不调classifier或feature。
 
 ## 实验日志
 
