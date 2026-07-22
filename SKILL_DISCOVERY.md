@@ -3091,7 +3091,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/stratified_none_capacity_2
 
 ## Phase 5ZZ：Visible Valley-threshold Stratified None
 
-状态：`capacity与正式data通过；balanced未运行`
+状态：`已完成；balanced失败，冻结3D feature + 1NN路线关闭`
 
 这是冻结三维feature+1-NN路线允许的最后一次none采样修订。Phase 5ZY八层中只替换失败的`valley_threshold`：accepted next position仍为`(-0.75,0.0)`，velocity从`[-0.005,0.005)`改为两个固定区间`[-0.005,-0.001] union [0.001,0.005)`；previous proposals、action及其他七层完全不变。`0.001`按MountainCar约600像素/1.8 position span对应约0.33像素位移量级，在新run前冻结，不从failed samples搜索最优cutoff。
 
@@ -3125,6 +3125,19 @@ Run：`outputs/skill_discovery/mountaincar_continuous/visible_stratified_none_da
 
 > [里程碑]
 > Phase 5ZZ 已得到与四正类完全隔离、分层配额精确的正式none shard。下一步直接调用冻结评估器，结果不再触发采样或feature修改。
+
+### Phase 5ZZ Balanced 结果：分层 None 仍被正类边界吸收
+
+Run：`outputs/skill_discovery/mountaincar_continuous/explicit_none_20260722_172340`
+
+- Paired protocol、5x256 reference/audit counts和feature data gate通过；分类器仍为无rejection的Euclidean 1-NN。
+- Five-class balanced accuracy/macro均为`0.9563`，低于0.98。Recalls为none `0.863`、left `0.984`、valley `0.973`、right `0.973`、goal `0.988`；none 误报left/valley/right为13/15/7，none->goal为0。
+- None per-stratum recalls为`0.938/0.719/0.969/0.594/0.906/0.781/1.000/1.000`。失败集中在left/valley/right三个threshold strata；reverse与goal-edge strata大多可分。
+- 相比uniform-none Phase 5ZX的none recall 0.906，分层版本降到0.863。一个合理解释是256个none reference分到八层后，每个threshold局部只有32个，而每个相邻正类仍有256个局部密集reference；1-NN的局部support继续偏向正类。
+- Balanced先验失败，因此未运行natural audit。按预注册停止条件，不做第三版none sampling、不改neighbor margin或class counts；冻结三维car-motion feature + Euclidean 1-NN路线关闭。
+
+> [里程碑]
+> MountainCar关系metric的失败边界已定位：RGB能够高精度恢复位置与位移，但简单1-NN无法在三个语义速度阈值附近同时保持正类与none recall。下一研究阶段必须更换metric family，而不是继续补reference样本。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3608,6 +3621,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：八层各256个accepted transitions；unique pairs均`>=251`，但valley-threshold motion-visible仅0.9414。
 - 解释：接近零速度的official transitions语义合法，但约5.9%在400x600 RGB中没有像素级位移，不满足visual relation data门槛。
 - 决定：联系表通过不能覆盖numeric failure；不生成正式data、不降低0.95门槛。若继续该方向，必须作为新阶段预注册可见运动下界，而不能修改本次run。
+
+### D-044：Predicate-boundary Strata 不能修复 1-NN Local Support
+
+- 日期：2026-07-22
+- 证据：visible-stratified dataset全部data gates通过；balanced five-class accuracy/macro仅0.9563，none recall 0.863。
+- 结果：三个threshold-stratum recalls为0.719/0.594/0.781，其他strata最高1.0；四正类recalls仍约0.97-0.99，none->goal为0。
+- 决定：按停止条件不运行natural、不做第三版none samples。关闭冻结三维feature+Euclidean 1-NN路线；下一方案必须预注册新的learned classifier/uncertainty metric family，并保留现有split作为不可调最终对照。
 
 ## 实验日志
 
