@@ -2229,6 +2229,15 @@ Bootstrap在5k后得到independent top stages `[2,1,0,3]`，即skill顺序为doo
 > [里程碑]
 > DoorKey 5x5 online discovery方法达到3/3 training seeds、9/9 last-three checkpoints和三份independent final全通过；其中包含一份真实bootstrap row collision及其无人工target mapping的修复。停止5x5调参。下一步只增加公开环境规模，先重新验证8x8 control upper bound，再决定是否迁移同一discovery协议；仍不进入IsaacLab。
 
+## Phase 5ZE：DoorKey 8x8 Control Scale Transfer
+
+状态：`seed 7单变量control计划已冻结，尚未运行`
+
+- 只把官方环境从 `MiniGrid-DoorKey-5x5-v0` 改为 `MiniGrid-DoorKey-8x8-v0`。固定Phase 5ZC的identity oracle rows、layout-aware compact state、五个official actions、state-changing mask、target-reaching option termination、Q update、seed 7和20k预算。
+- Horizon仍为64。Phase 4A的scripted audit已证明8x8五个seeds的真实解需要13--22 official actions，因此本阶段不随grid尺寸扩大horizon；这样可以把差异集中在layout/state coverage。
+- CRN仍按每四skills共享一个reset seed。Checkpoints固定4k/8k/12k/18k/19k/20k，每次512 layouts/skill，independent final另512；gate仍要求四个furthest rates、四个final-state rates和goal native success各 `>=0.80`，last-3全部通过。
+- 这是control upper bound，不是discovery结果。若通过，才冻结8x8的5k bootstrap+15k policy online-discovery复现；若失败，不增加预算或改reward，先报告Q-state coverage、失败stage和代表轨迹，停止8x8 discovery。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
