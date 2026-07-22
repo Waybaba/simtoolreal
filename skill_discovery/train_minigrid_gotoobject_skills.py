@@ -31,6 +31,7 @@ class GoToObjectTrainConfig:
     objective: str = "semantic_balanced"
     frozen_reward_matrix: tuple[tuple[float, ...], ...] | None = None
     frozen_reward_source: str | None = None
+    frozen_reward_calibration: str = "none"
     reward_timing: str = "exact_terminal"
     seed: int = 7
     num_skills: int = 3
@@ -67,6 +68,15 @@ class GoToObjectTrainConfig:
                 raise ValueError("frozen reward matrix must be finite")
         elif self.frozen_reward_matrix is not None:
             raise ValueError("frozen reward matrix requires frozen_matrix objective")
+        if self.frozen_reward_calibration not in {"none", "runner_up_unit"}:
+            raise ValueError("unknown frozen reward calibration")
+        if (
+            self.objective != "frozen_matrix"
+            and self.frozen_reward_calibration != "none"
+        ):
+            raise ValueError(
+                "frozen reward calibration requires frozen_matrix objective"
+            )
         if self.reward_timing not in {"exact_terminal", "occupancy"}:
             raise ValueError("unknown reward timing")
         if self.learning_rate_mode not in {"visit_power", "constant"}:
@@ -163,6 +173,8 @@ class GoToObjectReward:
 
 def frozen_reward_matrix_from_metrics(
     metrics: dict[str, object],
+    *,
+    calibration: str = "none",
 ) -> tuple[tuple[float, ...], ...]:
     config = metrics["config"]
     reward_model = metrics["reward_model"]
@@ -181,6 +193,18 @@ def frozen_reward_matrix_from_metrics(
         probabilities = totals / totals.sum()
         coverage = -np.log(np.maximum(3 * probabilities, 1.0e-8))
         reward += float(config["semantic_coverage_weight"]) * coverage[None, :]
+    if calibration == "runner_up_unit":
+        calibrated = np.empty_like(reward)
+        for skill, row in enumerate(reward):
+            ordered = np.sort(row)
+            runner_up, top = ordered[-2], ordered[-1]
+            gap = top - runner_up
+            if gap <= 1.0e-8:
+                raise ValueError("frozen reward row has no unique top stage")
+            calibrated[skill] = (row - runner_up) / gap
+        reward = calibrated
+    elif calibration != "none":
+        raise ValueError("unknown frozen reward calibration")
     return tuple(tuple(float(value) for value in row) for row in reward)
 
 
@@ -570,6 +594,11 @@ def main() -> None:
     )
     parser.add_argument("--frozen-reward-metrics", type=Path)
     parser.add_argument(
+        "--frozen-reward-calibration",
+        choices=("none", "runner_up_unit"),
+        default="none",
+    )
+    parser.add_argument(
         "--reward-timing",
         choices=("exact_terminal", "occupancy"),
         default="exact_terminal",
@@ -596,14 +625,20 @@ def main() -> None:
         source_metrics = json.loads(
             args.frozen_reward_metrics.read_text(encoding="utf-8")
         )
-        frozen_matrix = frozen_reward_matrix_from_metrics(source_metrics)
+        frozen_matrix = frozen_reward_matrix_from_metrics(
+            source_metrics,
+            calibration=args.frozen_reward_calibration,
+        )
         frozen_source = str(args.frozen_reward_metrics.resolve())
     elif args.frozen_reward_metrics is not None:
         parser.error("--frozen-reward-metrics requires frozen_matrix objective")
+    elif args.frozen_reward_calibration != "none":
+        parser.error("--frozen-reward-calibration requires frozen_matrix objective")
     config = GoToObjectTrainConfig(
         objective=args.objective,
         frozen_reward_matrix=frozen_matrix,
         frozen_reward_source=frozen_source,
+        frozen_reward_calibration=args.frozen_reward_calibration,
         reward_timing=args.reward_timing,
         seed=args.seed,
         episodes=args.episodes,

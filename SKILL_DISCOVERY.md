@@ -1671,12 +1671,36 @@ Run：`gotoobject_balanced_occupancy_seed7_formal_20260722_080420`
 
 ## Phase 5N：Frozen Discovered-reward Matrix Diagnostic
 
-状态：`20k两阶段诊断计划已冻结，尚未运行`
+状态：`20k两阶段诊断完成，未过门；spread landscape有效但carried credit偏慢`
 
 - 分别读取Phase 5L plain semantic与semantic-spread run的最终decayed semantic counts，按各自原公式计算固定的3x3 `reward(skill, stage)` matrix。
 - 冻结matrix后从空Q table重新训练；使用occupancy timing、原`N^-0.6` learning rate、seed 7、20k episodes、eval every2k、512 layouts/skill与last-3。环境、state、actions和evaluation不变。
 - 这是diagnostic，不宣称为完整discovery algorithm：它回答最终学出的reward landscape本身能否支持三种技能，唯一移除的变量是online policy/discriminator co-adaptation。
 - 两个matrix各自门控仍为independent-final far/adjacent/carried `>=0.90`且last-3全部通过。若通过，下一算法方向是block-wise freeze/update或EM-style交替；若失败，先处理reward scale/contrast，不进行训练预算或alpha sweep。
+
+### 20k Frozen-matrix 结果
+
+| Source matrix | Far | Adjacent | Carried | Gate |
+| --- | ---: | ---: | ---: | :---: |
+| Semantic | 0.977 | 0.955 | 0.494 | fail |
+| Semantic spread | 0.994 | 0.967 | 0.826 | fail |
+
+- Runs：`gotoobject_frozen_semantic_source_seed7_diagnostic_20260722_090500`与`gotoobject_frozen_spread_source_seed7_diagnostic_20260722_090508`。
+- 冻结后far/adjacent都稳定超过0.95，说明online co-adaptation确实是Phase 5L失败的一部分。
+- Semantic carried row为 `[far=+0.051, adjacent=-3.895, carried=+1.047]`。容易驻留的far仍是正奖励runner-up；carried在16k--20k约 `0.49`并已平台化。
+- Spread carried row为 `[-1.831, -3.172, +1.150]`，排序和contrast正确；carried从12k `0.729`单调升到20k `0.842`，但在冻结预算内仍未过0.90。
+
+> [失败记录]
+> 最终discovered matrix不是完全不可控，但原始log-reward的行偏置、负值尺度与零初始化降低了多步carried skill的学习速度。按门控不直接延长20k；下一步只做保持每行stage排序的affine calibration。
+
+## Phase 5O：Frozen Matrix Row-affine Calibration
+
+状态：`20k单变量校准计划已冻结，尚未运行`
+
+- 对Phase 5L semantic与spread的同一最终matrix逐行变换：减去runner-up reward，再除以`top-runner_up` gap，使每个skill的top stage为1、runner-up为0，其余stage可为负。
+- 该变换对每个skill是positive affine transform；固定64步horizon下不改变stage reward排序或理论最优policy，只改变数值尺度与Q=0 initialization关系。
+- 其余设置保持Phase 5N不变：fresh Q、`N^-0.6`、occupancy、seed 7、20k、2k/512、last-3。两个source matrices并行运行。
+- 门控仍为independent-final三类各 `>=0.90`且last-3全部通过。若通过，下一算法需显式做reward calibration再block-wise update；若失败，不再继续tabular reward shaping sweep，汇总后转向更标准的policy/discriminator优化器。
 
 ## Phase 6：迁移到 Hammer
 

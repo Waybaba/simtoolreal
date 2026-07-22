@@ -35,6 +35,14 @@ class GoToObjectSkillTrainerTest(unittest.TestCase):
         matrix = frozen_reward_matrix_from_metrics(metrics)
         expected = math.log(3 * 8 / 10) - math.log(3 * 10 / 20)
         self.assertAlmostEqual(matrix[0][0], expected)
+        calibrated = frozen_reward_matrix_from_metrics(
+            metrics,
+            calibration="runner_up_unit",
+        )
+        for row in calibrated:
+            ordered = sorted(row)
+            self.assertAlmostEqual(ordered[-1], 1.0)
+            self.assertAlmostEqual(ordered[-2], 0.0)
         config = GoToObjectTrainConfig(
             objective="frozen_matrix",
             frozen_reward_matrix=matrix,
