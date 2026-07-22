@@ -1830,7 +1830,7 @@ Run：`gotoobject_adaptive_deficit_seed7_20260722_095928`
 
 ## Phase 5S：Rank-normalized Adaptive Allocation
 
-状态：`paired 15k policy diagnostic计划已冻结，尚未运行`
+状态：`paired 15k policy diagnostic完成；rank signal仍未识别held-out难度`
 
 - 这是Phase 5R的单变量配对实验。Source bootstrap matrix、fresh Q、15k policy budget、3750个 `3 core + 1 extra` cycles、layout seeds、action RNG、scheduler RNG、epsilon、EMA `alpha=0.05`、评估与门槛全部不变。
 - 唯一变化是scheduler observation：raw terminal reward改为binary reward-rank success。当terminal frozen reward等于该skill row的最大reward时记1，否则记0；scheduler仍选择EMA最低的skill。
@@ -1838,6 +1838,29 @@ Run：`gotoobject_adaptive_deficit_seed7_20260722_095928`
 - 预注册预测：若raw magnitude是主要问题，extra episodes应从Phase 5R的far偏置转向carried，且carried final应高于0.807；若训练EMA再次饱和而held-out carried仍低，则training-layout reward不足以指导generalization allocation。
 - Pass gate保持independent-final far/adjacent/carried各 `>=0.90`且last-3全部通过。即使通过，也只证明rank signal优于raw signal；由于unique layouts仍为3750，不能单凭本实验宣称优于Phase 5Q round-robin。
 - 若失败，不扫描EMA alpha或extra fraction。根据extra分配与training-vs-held-out gap，决定停止adaptive sampling并回到固定CRN schedule，或设计显式保持5000 unique layouts的新schedule。
+
+### 15k Rank-normalized 结果
+
+Run：`gotoobject_adaptive_deficit_seed7_20260722_100935`
+
+| Policy episodes | Far | Adjacent | Carried | Gate |
+| ---: | ---: | ---: | ---: | :---: |
+| 3k | 0.793 | 0.775 | 0.555 | fail |
+| 6k | 0.842 | 0.912 | 0.748 | fail |
+| 9k | 0.891 | 0.934 | 0.814 | fail |
+| 12k | 0.912 | 0.955 | 0.855 | fail |
+| 15k | 0.924 | 0.967 | 0.889 | fail |
+| Independent final | 0.953 | 0.977 | 0.848 | fail |
+
+- Rank normalization把extra分配从Phase 5R的far/carried/adjacent `2446/391/913`改善为 `2355/714/681`，carried independent-final从0.807提高到0.848；raw reward scale确实是部分问题，但没有改变失败结论。
+- 前6k时carried training EMA最低并获得额外训练；约9k后其training rank EMA快速接近1，结束时为 `far=0.911, carried=1.000, adjacent=1.000`。Scheduler随后主要追逐far的偶发training失败，而held-out carried仍只有0.848。
+- 最终训练次数为far/carried/adjacent `6105/4464/4431`。Carried比Phase 5Q round-robin少536次，同时整个run仍只有3750 unique layouts；结果低于Phase 5Q的0.867，与这两个已知sample-coverage损失一致。
+- Final和last-3均失败，不扫描EMA alpha或extra比例。代表carried rollout仍完成真实pickup，floor objects `2->1`且 `carrying=[ball, yellow]`，所以失败仍是泛化率而不是交互真实性。
+
+![Rank-normalized adaptive 15k audit](outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_adaptive_deficit_seed7_20260722_100935/policy_rollout_audit.png)
+
+> [方向变化]
+> 停止adaptive environment sampling：raw与rank两个内部training signals都不能稳定代理held-out compositional difficulty，而且会牺牲CRN layout diversity。回到Phase 5Q固定round-robin schedule；下一效率方向优先考虑对bootstrap transitions做frozen-reward relabel/replay，让5k discovery数据在matrix冻结后继续有用，而不是把它们连同旧Q一起完全丢弃。
 
 ## Phase 6：迁移到 Hammer
 
