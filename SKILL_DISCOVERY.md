@@ -1991,7 +1991,7 @@ Artifact：`gotoobject_balanced_transition_audit_7_17_29_20260722.json`
 
 ## Phase 5X：Balanced-transition Integrated Replication
 
-状态：`3-seed formal计划已冻结，尚未运行`
+状态：`3-seed formal完成；3/3 final通过但1/3 temporal gate通过`
 
 - Training seeds仍为 `7/17/29`。每个seed先运行与Phase 5V完全相同的5k online semantic-spread bootstrap并记录transition buffer。
 - 5k边界不再使用independent row argmax permutation gate；改用Phase 5W冻结规则：raw 3x3 matrix做maximum-weight one-to-one assignment，buffer按25-count/1%-share门槛提取target direct predecessors，并构造target=1、predecessor=0、other=-1的matrix。
@@ -2000,6 +2000,34 @@ Artifact：`gotoobject_balanced_transition_audit_7_17_29_20260722.json`
 - Checkpoints仍精确为 `3k/6k/9k/13k/14k/15k`；last-3为post-anneal 13k/14k/15k。每seed需要independent-final三类各 `>=0.90`且last-3全部通过；method gate要求3/3 seeds通过。
 - 保存raw matrix、independent tops、balanced assignment/permutation scores、transition counts/predecessors、transition-aware matrix、buffer/replay Q、training Q、checkpoints、final和rollout audit。人工核对所有completed seeds的carried真实pickup。
 - 若失败，不改transition threshold、matrix values、replay sweeps或seed set。若3/3通过，停止GoToObject tabular算法搜索，汇总后进入更接近视觉/连续控制的下一环境；通过不等于直接宣称Hammer已解决。
+
+### 3-seed Integrated 结果
+
+Summary：`gotoobject_balanced_transition_replay_multiseed_7_17_29_20260722_105434.json`
+
+| Seed | Independent tops | Balanced assignment | Far | Adjacent | Carried | Last-3 | Run gate |
+| ---: | --- | --- | ---: | ---: | ---: | :---: | :---: |
+| 7 | far / carried / adjacent | far / carried / adjacent | 0.982 | 0.961 | 0.936 | pass | pass |
+| 17 | adjacent / far / carried | adjacent / far / carried | 0.980 | 0.977 | 0.930 | fail | fail |
+| 29 | carried / carried / adjacent | far / carried / adjacent | 0.994 | 0.953 | 0.938 | fail | fail |
+
+- 结构修复达到预期：3/3 bootstraps进入policy，seed 29 local collision被解析；三个independent finals的三类全部超过0.90。Final far/adjacent/carried mean为 `0.986/0.964/0.934`，carried std仅0.0033、worst仍0.930。
+- 预注册method gate仍只有1/3。Seed 17的13k/14k/15k carried为 `0.889/0.965/0.924`；seed 29为 `0.947/0.891/0.908`。两者各有一个post-anneal checkpoint略低于0.90，不能改判。
+- 与Phase 5V相比，seed 17 final carried从0.891升至0.930，seed 29从bootstrap collision变为final carried 0.938；balanced assignment与predecessor floor确实解决了两个指定失败结构。
+- 三个replay relabel reward sums均恢复为正值 `82.4k/100.3k/63.4k`，不再出现seed 17旧matrix的 `-174.6k` 放大。三个final assignments都与balanced target一致。
+- 图像和manifest逐seed核验真实pickup：seed 7/17/29分别携带yellow/purple/red ball，floor objects均从2变1；不存在只靠接近目标的假成功。
+
+> [结果]
+> 当前算法已经获得3/3 training seeds的强final-policy结果，但没有通过严格的三时点temporal gate。下一步不再训练或调matrix；对三个冻结final Q各做5个新seed-blocks，共15个evaluation blocks。若final robustness也稳定，则把checkpoint波动保留为限制并停止tabular搜索；若不稳定，再定位layout coverage。
+
+## Phase 5Y：Multi-training-seed Final Robustness Audit
+
+状态：`evaluation-only 15-block计划已冻结，尚未运行`
+
+- 输入固定为Phase 5X seeds `7/17/29` 的final `q_table.npz`；不继续训练、不选择checkpoint、不修改reward matrix。
+- 每个training seed使用Phase 5U同一协议：5个held-out blocks，block offsets为 `1,100,000 + index*100,000`，每block 512 common layouts/skill。总计15个evaluation blocks，且都与training/checkpoint/final seeds不重叠。
+- 每个block独立assignment后far/adjacent/carried均需 `>=0.90`。Per-training-seed gate要求5/5；method robustness gate要求15/15。报告每个training seed和跨15 blocks的mean/std/worst。
+- Audit不得修改Phase 5X `1/3 temporal gate` 的正式结果。若15/15通过，停止GoToObject tabular算法搜索并进入下一环境设计；若失败，不重训，先报告失败集中在哪个training seed/stage/layout block。
 
 ## Phase 6：迁移到 Hammer
 
