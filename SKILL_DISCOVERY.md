@@ -2669,6 +2669,40 @@ Taxi已经证明完整online domain与oracle reference centers也不能保证ful
 > [大计划]
 > 先用CPU生成并审计3,072张balanced RGB；parser gate通过后再用一张空闲GPU编码DINO。长命令按约5--10分钟间隔检查，日常运行只写一行log，完成或失败才写里程碑。
 
+### Phase 5ZO 结果：Object-graph Gate 通过
+
+- Dataset：`gotoobject_visual_dataset_20260722_151000`。Reference/audit各严格`512/512/512`，共3,072张unique RGB；split内无重复、跨split frame-hash交集为0。Scripted reference顺序尝试543个seeds，其中4个官方layout不存在任何far state并作为`skipped_without_far_state`记录；random audit使用141个fresh episodes，不删除自然layout。
+- 两split都覆盖key/ball/box、六种颜色、四个agent directions和全部16个内部agent positions。联系表人工确认far/adjacent/carried分别对应空间关系、相邻关系和pickup后的floor object消失。
+- 48个unique官方tile templates在全部audit tiles逐像素exact match。Agent cell/direction、floor object count、floor object positions均为1.0；由这些RGB解析结果得到的三stage accuracy与recall全为1.0。
+- Frozen DINOv2-small在GPU 0编码3,072帧耗时9.26秒。相同scripted-reference centroid协议下，random audit accuracy/macro recall为0.709，far/adjacent/carried recall为`0.664/0.543/0.920`。Raw current为0.333，carried recall仅0.064。
+- Object graph相对DINO macro recall提高0.291，超过预注册0.10结构优势gate；parser gate、semantic gate与final gate全部通过。
+
+| Method | Accuracy | Far recall | Adjacent recall | Carried recall |
+| --- | ---: | ---: | ---: | ---: |
+| Raw current reference | 0.333 | 0.488 | 0.447 | 0.064 |
+| DINOv2 current reference | 0.709 | 0.664 | 0.543 | 0.920 |
+| RGB template object graph | **1.000** | **1.000** | **1.000** | **1.000** |
+
+Artifacts：`outputs/skill_discovery/minigrid_gotoobject_visual/gotoobject_visual_dataset_20260722_151000`、`gotoobject_dinov2_20260722_151500`与`gotoobject_object_graph_final_20260722_152000`。
+
+![GoToObject RGB object-graph audit](outputs/skill_discovery/minigrid_gotoobject_visual/gotoobject_object_graph_final_20260722_152000/gotoobject_object_graph_audit.png)
+
+![GoToObject visual metric comparison](outputs/skill_discovery/minigrid_gotoobject_visual/gotoobject_object_graph_final_20260722_152000/gotoobject_visual_metric.svg)
+
+> [里程碑]
+> Full-frame DINO能较好识别pickup后的object disappearance，但不能稳定表达far与adjacent关系。显式恢复agent/object cells后，random exploration distribution上的三类全部无误。这支持“object relation structure比generic global feature更适合作为skill metric”，但结果依赖MiniGrid renderer templates，尚不证明跨style或Hammer泛化。
+
+## Phase 5ZP：RGB Object-graph Online Discovery
+
+状态：`预注册；先跑paired seed 7`
+
+- 完全复用Phase 5X seed 7：5,000 bootstrap +15,000 policy episodes、64 horizon、epsilon、semantic-spread counts、balanced-transition assignment、transition predecessor floor、reverse-once bootstrap replay、evaluation checkpoints `3k/6k/9k/13k/14k/15k`与512 layouts/skill。
+- 唯一算法输入变化：bootstrap与policy reward查询的`semantic_stage(env)`替换为Phase 5ZO冻结的`rgb_template_object_graph(env.render())`。Policy仍使用mission-free compact relation key，evaluation仍用oracle stage，只用于最终控制评价。
+- RGB frame hash允许做纯性能cache；cache miss只能执行冻结parser，不能读取state填充。Training同时计算oracle stage作为shadow audit并累计mismatch，但shadow值不得改变reward、matrix、transition buffer或Q update。
+- Paired semantic source固定为`gotoobject_blockwise_spread_balanced_transition_replay_seed7_20260722_105434`。环境seeds、action RNG和算法配置保持相同，因此额外要求final Q keys/actions逐值一致；若stage mismatch为0但Q不同，先定位非确定性，不用性能结果掩盖。
+- Gate：所有visual reward queries mismatch count为0；bootstrap gate通过且assignment为`[0,2,1]`；13k/14k/15k与独立final的far/adjacent/carried均`>=0.90`；Q-table与paired semantic source exact equal。
+- 若通过，下一大计划才运行seeds 17/29的paired视觉替换；若失败，不改parser、cache或threshold，报告失败来自visual mismatch、runtime nondeterminism还是control gate。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
@@ -3068,6 +3102,15 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 结果：`u1325/u2200`没有真实抬升；`u1700/u2600`的越阈值高度从第1帧开始，且抬升帧没有3 cm指尖几何邻近。四条轨迹严格4 cm位置成功均为0。
 - 决定：旧curve、sticky lift和不同env的视频都不能证明抓取成功。保留physics migration pass，但Hammer视觉metric不运行、不降gate，直到有支持Isaac Sim 5.1 RTX renderer的机器或可工作的旧渲染runtime。
 - 下一步：不继续消耗GPU重跑同一无渲染策略；当前研究主线回到已通过的小环境证据和object-centric representation设计。
+
+### D-033：Object Graph 修复 Full-frame Relation Gap
+
+- 日期：2026-07-22
+- 证据：3,072张GoToObject RGB，scripted reference与random exploration audit按stage平衡且无frame重复或split泄漏。
+- 结果：Raw/DINO macro recall为0.333/0.709；RGB tile-template object graph为1.0，且agent/object解析逐项1.0。
+- 解释：DINO carried recall 0.920，说明object disappearance可见；主要缺口是far/adjacent的显式空间关系，不是单纯换更大的global encoder。
+- 限制：模板知道MiniGrid renderer vocabulary，不是通用视觉模型。它只作为object-centric structural upper bound与下一步视觉reward桥接。
+- 下一步：严格paired替换Phase 5X seed-7 reward stage，要求零visual/oracle mismatch和Q-table exact equality后再扩seed。
 
 ## 实验日志
 
