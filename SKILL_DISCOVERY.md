@@ -3042,6 +3042,41 @@ Five-class audit：`outputs/skill_discovery/mountaincar_continuous/explicit_none
 > [大计划]
 > CPU先生成512个none pairs并人工看联系表；随后跑balanced five-class gate。两者通过才花约4分钟做paired natural rollout；长命令继续按约300秒等待。
 
+## Phase 5ZY：Predicate-boundary Stratified None
+
+状态：`预注册；未运行capacity audit`
+
+Phase 5ZX的失败分析只使用其冻结balanced audit：24个none误报全部位于left/valley/right对应position区间，next velocity靠近relation阈值；没有运行或查看新的natural rollout。Phase 5ZY保留四个relation shards、Phase 5ZV median background、三维`[x_t,x_t+1,delta]` feature、Euclidean 1-NN及全部gates，只替换none的uniform proposal。
+
+### Frozen Eight Strata
+
+每个split的256个none固定分为以下8层，每层32个。所有条件作用于official dynamics得到的`next_state=(x',v')`，并额外要求四个relation predicates全false：
+
+| stratum | accepted next position | accepted next velocity | previous-position proposal | previous-velocity proposal |
+| --- | --- | --- | --- | --- |
+| left_edge | `[-1.20,-1.15)` | `[-0.07,0.07]` | `[-1.20,-1.14]` | `[-0.02,0.02]` |
+| left_threshold | `[-1.15,-0.75]` | `(-0.005,0.005)` | `[-1.16,-0.74]` | `[-0.012,0.012]` |
+| left_reverse | `[-1.15,-0.75]` | `[0.005,0.07]` | `[-1.16,-0.74]` | `[0.002,0.07]` |
+| valley_threshold | `(-0.75,0.0)` | `[-0.005,0.005)` | `[-0.76,0.01]` | `[-0.012,0.012]` |
+| valley_reverse | `(-0.75,0.0)` | `[-0.07,-0.005)` | `[-0.76,0.01]` | `[-0.07,-0.002]` |
+| right_threshold | `[0.0,0.45)` | `[-0.005,0.005)` | `[-0.01,0.46]` | `[-0.012,0.012]` |
+| right_reverse_body | `[0.0,0.38)` | `[-0.07,-0.005)` | `[-0.01,0.39]` | `[-0.07,-0.002]` |
+| right_reverse_goal_edge | `[0.38,0.45)` | `[-0.07,-0.005)` | `[0.37,0.46]` | `[-0.07,-0.002]` |
+
+Action proposal对所有层固定uniform `[-1,1]`。区间、层数和相等配额在看新数据前冻结；不按Phase 5ZX的具体错例做nearest-neighbor hard-negative mining。
+
+### Capacity、Dataset 与 Gates
+
+- Capacity seed固定`8,150,007 + 100,000*stratum_index`，每层接受256个合法transitions；要求每层至少128个unique pair hashes、motion-visible rate `>=0.95`、finite与predicate checks全通过。Capacity只保存counts和每层两对联系表，不成为reference。
+- 正式reference seed `8,200,007`、audit seed `9,200,007`，每层每split 32个unique pair hashes。每层内、跨层、跨split及与四relation shards均不能有pair-hash overlap；保存stratum ids、full RGB、state/action/next state与联系表。
+- Capacity和dataset联系表人工通过后，重跑完全相同的five-class balanced gate：accuracy/macro各`>=0.98`、五类recall各`>=0.95`。不重估background、不改正类、不运行DINO。
+- Balanced通过才原样重跑Phase 5ZW自然协议；要求relation macro `>=0.95`、各`>=0.90`、goal `>=0.95`、none recall `>=0.90`、none->goal `<=0.01`、五个predicted classes非空。
+
+若capacity失败，该层不能用于正式data；若balanced失败，关闭冻结三维feature+1-NN路线，不做第三次none采样调整。若balanced通过但natural失败，保留paired结果并先写failure analysis，不从natural labels回填reference。
+
+> [大计划]
+> 先用CPU完成八层capacity audit和人工联系表；通过后生成分层none。Balanced gate通过以前不运行61k natural transitions；长命令按约300秒阻塞等待。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
