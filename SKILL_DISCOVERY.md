@@ -3089,6 +3089,20 @@ Run：`outputs/skill_discovery/mountaincar_continuous/stratified_none_capacity_2
 > [里程碑]
 > 第一版position/motion分层在数据容量阶段即停止：语义与hash容量足够，但`valley_threshold`包含过多RGB不可见的近零位移。Phase 5ZY失败，不允许用该层继续正式实验。
 
+## Phase 5ZZ：Visible Valley-threshold Stratified None
+
+状态：`预注册；未运行`
+
+这是冻结三维feature+1-NN路线允许的最后一次none采样修订。Phase 5ZY八层中只替换失败的`valley_threshold`：accepted next position仍为`(-0.75,0.0)`，velocity从`[-0.005,0.005)`改为两个固定区间`[-0.005,-0.001] union [0.001,0.005)`；previous proposals、action及其他七层完全不变。`0.001`按MountainCar约600像素/1.8 position span对应约0.33像素位移量级，在新run前冻结，不从failed samples搜索最优cutoff。
+
+- Capacity继续使用Phase 5ZY相同base seed `8,150,007`、每层256 accepted和相同`>=128` unique/`>=0.95` motion gates，形成除失败层acceptance外均可配对的复测。八层全部通过且联系表人工通过才允许正式data。
+- 正式reference seed `8,300,007`、audit seed `9,300,007`；八层每split各32，总none仍为256。所有predicate、finite、shape、层内/跨层/跨split/四正类hash隔离条件保持Phase 5ZY不变。
+- Balanced five-class和paired natural gates完全复用Phase 5ZY。Natural audit保留`|v'|<0.001`的真实none transitions，因此最终deployment gate仍会惩罚reference没有覆盖的stationary regime；不能从natural结果回填样本。
+- 若capacity或balanced失败，关闭三维car-motion feature+Euclidean 1-NN路线，不再修改none strata。若natural失败，同样不做第三个reference版本，下一研究计划必须换成预注册的learned uncertainty/classifier或其他metric family。
+
+> [大计划]
+> 先做paired capacity；通过后才实现并生成正式分层shard。Balanced通过才运行约61k natural transitions，所有长命令按约300秒阻塞等待。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
