@@ -3,9 +3,9 @@
 > [当前状态]
 > 分支：`codex/skill-discovery`
 >
-> 当前阶段：小环境路线已完成到Taxi-v4 full-domain visual gate；DoorKey online visual reward为0/3，Taxi frozen DINO reference upper bound也失败。现转入Hammer离线迁移前的数据审计，不启动长PPO训练。
+> 当前阶段：小环境路线已完成到Taxi-v4 full-domain visual gate；现有Hammer数据审计完成。`isaaclab510` physics smoke通过，但RTX rendering在当前4x RTX 2080 Ti机器上启动即崩溃，不能用它补录视频。
 >
-> 当前动作：现有圆柄Hammer训练MP4与JSONL记录了不同env，历史评估trace又没有原始物体位移，因此都不能直接作为视觉语义真值。下一步只补录四条短的env0视频/状态严格同步轨迹，再做object-centric或vision-language离线metric gate；通过前不接reward。
+> 当前动作：保留5.1 rendering失败为迁移结论；使用仓库现成、历史验证过的隔离Docker runtime只补录四条env0视频/状态严格同步短轨迹，再做object-centric或vision-language离线metric gate。通过前不接reward。
 
 ## 一眼看完整流程
 
@@ -2685,6 +2685,18 @@ Primary gate：
 - stage score在真实抬升/接近目标前后呈正确方向，且人工联系表不出现“手移动、hammer未动却预测成功”的系统性错误。
 
 若四条短轨迹仍不能覆盖至少三个stage，只允许补录新的短rollout或改变已有checkpoint选择，不训练metric、不改gate。若metric失败，停止Hammer reward接入并记录失败；若通过，下一大计划才定义cached embedding reward和短控制实验。
+
+### Phase 6B.1：`isaaclab510` Migration Gate 结果
+
+`isaaclab510`位于`/home/wang100/data/conda/envs/isaaclab510`，PyTorch 2.7.0+cu128可识别四张GPU。为避免把调度问题误判成环境问题，依次做了三层启动：
+
+1. 四卡渲染启动使用`CUDA_VISIBLE_DEVICES`重映射时，Kit明确报告CUDA与Omniverse设备编号不一致，四个进程均在Hydra创建时崩溃；该配置作废。
+2. 改为物理GPU编号、每卡独立Kit `--portable-root`，并单卡关闭renderer Multi-GPU后，仍在`librtx.scenedb.plugin` / `createHydraEngine`初始化崩溃。进程从未进入env创建，显存约277 MiB，没有产生run、视频或trajectory。
+3. 同一环境改用`isaaclab.python.headless.kit`做无渲染smoke，4个`SimToolReal-Direct-Debug-v0`环境成功创建、reset并执行32步；最后平均reward为`-0.020704`。
+
+因此当前迁移结论是：Isaac Lab 5.1 physics/API路径可运行，5.1 RTX rendering路径在本机硬件/驱动组合上失败。NVIDIA的5.1 requirements列出的最低GPU是RTX 4080/16 GB、测试Linux驱动为580.65.06；本机是4x RTX 2080 Ti/11 GB和610.43.02，低于其渲染最低配置。参考：`https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/requirements.html`。
+
+按预注册，视觉数据仍必须补录，但不继续改5.1 renderer参数。回退到仓库已有`simtoolreal-isaaclab:latest`隔离Docker runtime；该runtime是现有圆柄训练/评估视频的数据来源。每张物理GPU使用独立容器、Kit目录和日志。Docker结果只用于Hammer离线视觉metric，不宣称5.1 rendering迁移成功。
 
 ## Phase 7：组合性与下游任务
 
