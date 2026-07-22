@@ -2441,6 +2441,30 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 > [里程碑]
 > Frozen DINO current在独立完整轨迹上仍有很高的frame分类准确率，但不能恢复无环的四阶段转换图。这个失败说明“单帧stage prediction基本正确”不足以作为online skill reward：少量door pose错误会产生结构性反向边。按预注册停止on-demand visual lookup与online visual discovery，不改edge threshold、不在groups 97/107上refit、不用oracle删除反向边。
 
+## Phase 5ZK：Unlabeled Causal Ordered-cluster Decoder
+
+状态：`fresh数据生成前协议冻结，尚未运行`
+
+### 新假设与边界
+
+- Phase 5ZJ raw hard-cluster graph的失败永久保留，本阶段不重新判定5ZJ。新假设来自原始笔记中的trajectory/transition定义：高准确率视觉state classifier需要一个只读历史的因果顺序约束，才能成为skill reward state。
+- Groups 97/107只作为无oracle-label calibration sequences。DINO、Phase 5ZG四个current centers和cluster mapping继续冻结；不使用oracle stage、skill ID或native reward拟合顺序或解码器。
+- 这不是通用视觉表示学习结论。DoorKey 5x5是有限layout benchmark；即使通过，也只证明冻结视觉cluster加因果时序状态机能恢复本环境的option stages。
+
+### Calibration 与固定解码规则
+
+- 先取所有sequence reset的共同raw cluster作为root；若reset cluster不唯一，立即失败。
+- 在以root开头的其余三个cluster排列中，计算所有raw non-self transitions的 `forward_count - backward_count`，选择分数最大的全局顺序；并列时按cluster ID tuple字典序选择。Oracle labels不参与排列或tie break。
+- Online decoder在每条sequence reset时置为order position 0。之后每帧只比较当前raw cluster：恰好等于下一个order cluster时前进一格，否则保持；禁止回退、跨级、使用未来帧、skill ID、native termination或oracle修正。
+- Calibration完成后冻结cluster order和decoder代码，再生成fresh groups `117/127`，每group 128 common layouts x四个Phase 5ZC policies。
+
+### Fresh Gate
+
+- Primary只评价causal decoded stage occurrences；raw hard-cluster结果作为诊断。Fresh occurrence overall accuracy要求 `>=0.85`、四stage recall各 `>=0.75`、groups 117/127各accuracy `>=0.80`。
+- 四种target skills的decoded final-state rate各 `>=0.80`；native goal terminal decoded-goal recall `>=0.80`；target非goal的三类sequences中，任意时刻误进入decoded goal的sequence比例 `<=0.05`。
+- 所有fresh resets必须decoded为root，四个decoded stages均非空，三条相邻stage transitions各至少25次。因果规则本身保证无回退，因此该结构项不能替代上面的oracle audit metrics。
+- 若全部通过，下一阶段才允许把causal decoded stage接入online discovery lookup；若失败，停止DoorKey视觉路线，不在groups 117/127上改score、tie break、decoder或门槛。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
