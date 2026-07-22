@@ -2376,13 +2376,36 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 
 ## Phase 5ZI：DINO Current Fresh-group Confirmation
 
-状态：`post-hoc假设的独立确认协议已冻结，尚未运行`
+状态：`fresh groups 77/87完成；DINO current gate通过`
 
 - Phase 5ZH诊断显示frozen DINO current在groups 57/67为0.951，但它不是当轮预注册主方法。新阶段明确把“DoorKey semantic stage更适合current foundation state而非endpoint temporal direction”作为独立假设，不改DINO、KMeans `K=4`、centers或cluster mapping。
 - 使用全新generation groups `77/87`，与train `7/17/27`、endpoint audit `37/47`、首次policy-state audit `57/67`全部隔离。数据生成仍为每group 256 common layouts x四skills，并各stage reservoir 128条，共1024 samples。
 - Primary固定为 `dinov2_current`；其他representations只报告诊断。Zero-refit gate沿用Phase 5ZH，不降低：overall accuracy `>=0.85`、四stage recalls各 `>=0.75`、groups 77/87各accuracy `>=0.80`、四clusters非空。
 - Current representation不使用reset frame计算feature，但dataset仍保存reset/current pair以保持审计一致；labels仍只用于balanced sampling和evaluation，不进入DINO、nearest-center assignment或policy。
 - 若fresh groups通过，下一大计划才定义online finite-state visual lookup和无label cluster reward；若失败，停止DoorKey visual online分支，不再从同一五种representations中轮换选择。
+
+### Fresh-group 结果
+
+- Dataset：`doorkey5_policy_state_visual_fresh_20260722_125200`
+- Transfer：`doorkey5_policy_state_current_confirmation_20260722_125400`
+
+| Frozen representation | Accuracy | Nav recall | Key recall | Door recall | Goal recall | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | :---: |
+| Raw current | 0.756 | 0.785 | 0.457 | 0.781 | 1.000 | fail |
+| Raw temporal delta | 0.720 | 0.797 | 0.441 | 0.641 | 1.000 | fail |
+| **DINO current** | **0.945** | **1.000** | **1.000** | **0.781** | **1.000** | **pass** |
+| DINO start+current | 0.945 | 1.000 | 1.000 | 0.781 | 1.000 | diagnostic only |
+| DINO temporal delta | 0.879 | 1.000 | 0.883 | 0.633 | 1.000 | fail |
+
+- Primary在运行前固定为DINO current。Groups 77/87 accuracy为0.949/0.941，各自door recall为0.797/0.766，均通过原门槛；没有复用groups 57/67做确认。
+- Temporal delta在fresh split再次出现door内部失败，groups 77/87 door recall为0.664/0.602；这重复支持Phase 5ZH的error diagnosis，而不是单个reservoir偶然。
+- Current的navigation/key/goal跨两个fresh groups均1.0，错误只剩56/256 door states。它通过gate但door margin仅0.031，不能据此假设online cluster sequence天然稳定。
+- 人工contact sheet再次显示每stage三种pose/layout且图像正常。Frozen endpoint centers、cluster mapping和DINO均未refit；本阶段只改变预注册primary并使用全新数据。
+
+![DoorKey fresh current confirmation](outputs/skill_discovery/minigrid_doorkey_visual/doorkey5_policy_state_visual_fresh_20260722_125200/policy_state_manual_audit.png)
+
+> [里程碑]
+> DINO current作为DoorKey semantic-state metric通过独立fresh-group确认，说明foundation feature对key/door/goal对象状态具有可迁移信息；temporal delta的endpoint偏差也在第二套groups重复。上线前仍需连续轨迹cluster coherence与无label transition DAG gate，不能从独立frame accuracy直接跳到reward training。
 
 ## Phase 6：迁移到 Hammer
 
