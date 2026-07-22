@@ -72,6 +72,7 @@ class DoorKeyTabularTrainerTest(unittest.TestCase):
             evaluation_checkpoints=(20, 30, 40),
             eval_episodes_per_skill=2,
             valid_action_mask=True,
+            terminate_on_target=True,
         )
         with tempfile.TemporaryDirectory() as temporary:
             output_dir = Path(temporary) / "run"

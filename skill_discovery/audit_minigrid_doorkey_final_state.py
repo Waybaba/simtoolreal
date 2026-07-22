@@ -15,6 +15,7 @@ from skill_discovery.train_minigrid_doorkey_tabular import (
     DoorKeyState,
     DoorKeyTabularConfig,
     _rollout,
+    final_state_success,
 )
 
 
@@ -52,19 +53,6 @@ def load_doorkey_q_table(path: Path) -> dict[DoorKeyState, np.ndarray]:
     }
 
 
-def _final_state_success(skill: int, rollout: dict[str, object]) -> bool:
-    carrying = rollout["carrying"]
-    door_open = bool(rollout["door_open"])
-    native_success = bool(rollout["native_success"])
-    if skill == 0:
-        return int(rollout["stage"]) == 0
-    if skill == 1:
-        return carrying is not None and carrying[0] == "key" and not door_open
-    if skill == 2:
-        return door_open and not native_success
-    return native_success
-
-
 def audit_final_states(
     run_dir: Path,
     audit: DoorKeyFinalStateAuditConfig,
@@ -84,6 +72,7 @@ def audit_final_states(
         eval_episodes_per_skill=audit.eval_episodes_per_skill,
         stage_rate_gate=float(source["stage_rate_gate"]),
         valid_action_mask=bool(source["valid_action_mask"]),
+        terminate_on_target=bool(source.get("terminate_on_target", False)),
     )
     if not config.valid_action_mask:
         raise ValueError("final-state audit requires the action-mask run")
@@ -100,7 +89,7 @@ def audit_final_states(
                 seed=base_seed + episode,
             )
             furthest_counts[skill, int(rollout["stage"])] += 1
-            success_counts[skill] += int(_final_state_success(skill, rollout))
+            success_counts[skill] += int(final_state_success(skill, rollout))
     rates = success_counts / audit.eval_episodes_per_skill
     output = {
         "source_run": str(run_dir.resolve()),

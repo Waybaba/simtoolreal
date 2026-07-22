@@ -57,6 +57,7 @@ class DoorKeyTabularConfig:
     stability_checkpoints: int = 3
     stage_rate_gate: float = 0.80
     valid_action_mask: bool = False
+    terminate_on_target: bool = False
 
     def __post_init__(self) -> None:
         if self.num_skills != len(DOORKEY_STAGES):
@@ -188,6 +189,19 @@ def _training_action(
     return int(rng.choice(candidates))
 
 
+def final_state_success(skill: int, rollout: dict[str, object]) -> bool:
+    carrying = rollout["carrying"]
+    door_open = bool(rollout["door_open"])
+    native_success = bool(rollout["native_success"])
+    if skill == 0:
+        return int(rollout["stage"]) == 0
+    if skill == 1:
+        return carrying is not None and carrying[0] == "key" and not door_open
+    if skill == 2:
+        return door_open and not native_success
+    return native_success
+
+
 def _rollout(
     q_table: dict[DoorKeyState, np.ndarray],
     config: DoorKeyTabularConfig,
@@ -207,6 +221,7 @@ def _rollout(
         keys = []
         native_reward = 0.0
         terminated = truncated = False
+        option_terminated = False
         for _ in range(config.horizon):
             key = compact_doorkey_state(env)
             keys.append(key)
@@ -229,10 +244,15 @@ def _rollout(
                 reward=native_reward,
             )
             furthest_stage = max(furthest_stage, stage)
+            option_terminated = bool(
+                config.terminate_on_target
+                and skill in {1, 2}
+                and furthest_stage == skill
+            )
             actions.append(action)
             if render:
                 frames.append(env.render())
-            if terminated or truncated:
+            if terminated or truncated or option_terminated:
                 break
         base = env.unwrapped
         carrying = None
@@ -259,6 +279,7 @@ def _rollout(
             "door_open": bool(door_open),
             "terminated": bool(terminated),
             "truncated": bool(truncated),
+            "option_terminated": option_terminated,
             "frames": frames,
         }
     finally:
@@ -274,18 +295,22 @@ def evaluate_q_table(
     rates = np.zeros((4, 4), dtype=np.float64)
     mean_steps = []
     native_success_rates = []
+    final_state_rates = []
     for skill in range(config.num_skills):
         stages = []
         steps = []
         successes = []
+        final_state_successes = []
         for episode in range(config.eval_episodes_per_skill):
             rollout = _rollout(q_table, config, skill, seed=seed + episode)
             stages.append(int(rollout["stage"]))
             steps.append(int(rollout["steps"]))
             successes.append(bool(rollout["native_success"]))
+            final_state_successes.append(final_state_success(skill, rollout))
         rates[skill] = np.bincount(stages, minlength=4) / len(stages)
         mean_steps.append(float(np.mean(steps)))
         native_success_rates.append(float(np.mean(successes)))
+        final_state_rates.append(float(np.mean(final_state_successes)))
     target_rates = np.diag(rates).astype(float).tolist()
     by_stage = {
         stage: target_rates[index] for index, stage in enumerate(DOORKEY_STAGES)
@@ -293,6 +318,10 @@ def evaluate_q_table(
     gate = bool(
         all(rate >= config.stage_rate_gate for rate in target_rates)
         and native_success_rates[3] >= config.stage_rate_gate
+        and (
+            not config.terminate_on_target
+            or all(rate >= config.stage_rate_gate for rate in final_state_rates)
+        )
     )
     return {
         "episodes_per_skill": config.eval_episodes_per_skill,
@@ -301,6 +330,11 @@ def evaluate_q_table(
         "target_rate_by_stage": by_stage,
         "native_success_rates": native_success_rates,
         "goal_native_success_rate": native_success_rates[3],
+        "final_state_rates": final_state_rates,
+        "final_state_rate_by_target": {
+            stage: final_state_rates[index]
+            for index, stage in enumerate(DOORKEY_STAGES)
+        },
         "mean_episode_steps": mean_steps,
         "specialization_gate_passed": gate,
     }
@@ -471,7 +505,17 @@ def train_run(
                 )
                 furthest_stage = max(furthest_stage, stage)
                 reward = DOORKEY_CONTROL_MATRIX[skill][furthest_stage]
-                terminal = bool(terminated or truncated or step + 1 == config.horizon)
+                option_terminated = bool(
+                    config.terminate_on_target
+                    and skill in {1, 2}
+                    and furthest_stage == skill
+                )
+                terminal = bool(
+                    terminated
+                    or truncated
+                    or option_terminated
+                    or step + 1 == config.horizon
+                )
                 if terminal:
                     target = reward
                     terminal_counts[skill, furthest_stage] += 1
@@ -532,6 +576,7 @@ def train_run(
         "elapsed_seconds": elapsed,
         "training_layout_seed_mode": "common_per_four_skill_cycle",
         "valid_action_mask": config.valid_action_mask,
+        "terminate_on_target": config.terminate_on_target,
         "terminal_counts": terminal_counts.tolist(),
         "native_success_counts": native_success_counts.tolist(),
         "q_state_count": len(q_table),
@@ -556,6 +601,7 @@ def main() -> None:
     parser.add_argument("--evaluation-checkpoints")
     parser.add_argument("--eval-episodes", type=int, default=512)
     parser.add_argument("--valid-action-mask", action="store_true")
+    parser.add_argument("--terminate-on-target", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     checkpoints = (
@@ -570,10 +616,13 @@ def main() -> None:
         evaluation_checkpoints=checkpoints,
         eval_episodes_per_skill=args.eval_episodes,
         valid_action_mask=args.valid_action_mask,
+        terminate_on_target=args.terminate_on_target,
     )
     mask_tag = "_actionmask" if config.valid_action_mask else ""
+    termination_tag = "_optionterm" if config.terminate_on_target else ""
     run_id = (
-        f"doorkey5_tabular_balanced_control{mask_tag}_seed{config.seed}_"
+        f"doorkey5_tabular_balanced_control{mask_tag}{termination_tag}_"
+        f"seed{config.seed}_"
         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
     output_dir = args.output_dir or Path(

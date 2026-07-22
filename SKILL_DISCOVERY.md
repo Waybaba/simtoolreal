@@ -2117,12 +2117,38 @@ Run：`doorkey5_tabular_balanced_control_actionmask_seed7_20260722_112434`
 
 ## Phase 5ZB：DoorKey Final-state Persistence Audit
 
-状态：`evaluation-only计划已冻结，尚未运行`
+状态：`evaluation-only完成；door persistence 0.525，gate失败`
 
 - 只加载Phase 5ZA final Q，不训练。使用独立 `seed+1,100,000` 的512 common layouts/skill，保留64步evaluation horizon和state-changing mask。
 - 同时报告furthest stage与final state。Navigation要求furthest=0；key要求final carrying key且door closed；door要求final door open且未native goal termination；goal要求native success。
 - 四个final-state rates各 `>=0.80` 才允许进入discovery。Audit不能修改Phase 5ZA furthest-stage pass，只增加option compositionality证据。
 - 若door persistence失败，不调reward或预算；下一单变量是target-reaching option termination：key/door skills首次达到其target后立即结束，而navigation保持horizon、goal使用native termination。
+
+### Final-state 结果
+
+Artifact：`doorkey5_tabular_balanced_control_actionmask_seed7_20260722_112434/final_state_persistence_audit.json`
+
+| Target | Furthest-stage rate | Final-state rate | Gate |
+| --- | ---: | ---: | :---: |
+| Navigation | 1.000 | 1.000 | pass |
+| Key | 1.000 | 1.000 | pass |
+| Door | 1.000 | 0.525 | fail |
+| Goal | 1.000 | 1.000 | pass |
+
+- Door在所有evaluation episodes都曾打开，但只有52.5%在64步结束时仍open；代表manifest中的closed final不是单个seed偶然。
+- Key carrying与goal native termination均稳定，问题只属于非终止door option的输出状态。Phase 5ZA furthest-stage pass保留，但不能作为下游组合性pass。
+
+> [失败记录]
+> “曾经达到某语义事件”与“option结束时交付该状态”必须分开。DoorKey后续所有intermediate-skill gates同时报告furthest achievement和final persistence。
+
+## Phase 5ZC：DoorKey Target-reaching Option Termination
+
+状态：`20k单变量control diagnostic计划已冻结，尚未运行`
+
+- 完全复用Phase 5ZA action mask、state、reward matrix、seed 7、20k、CRN、Q update、epsilon和checkpoints。唯一训练行为变化：key/door skills首次达到各自target furthest stage后立即option-terminate；goal仍由native success终止，navigation仍运行64步。
+- Option termination不是额外reward、solver或macro action。它定义skill调用何时把控制权返回high-level policy，并使training/evaluation contract一致。
+- Gate同时要求四个furthest target rates、四个final-state rates、goal native success各 `>=0.80`，且last-3全部通过。Door manifest必须final `door_open=true`，key必须final carrying key。
+- 若通过，固定该control interface后才设计DoorKey online discovery；若失败，不调整termination tolerance，检查哪个layout在pickup/toggle前停止或Q未覆盖。
 
 ## Phase 6：迁移到 Hammer
 
