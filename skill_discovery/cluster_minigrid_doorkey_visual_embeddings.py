@@ -107,6 +107,36 @@ def _cluster_method(
     return output, train_clusters, audit_clusters, model.cluster_centers_
 
 
+def _group_audit(
+    clusters: np.ndarray,
+    stages: np.ndarray,
+    groups: np.ndarray,
+    cluster_to_stage: dict[str, str],
+) -> dict[str, object]:
+    stage_indices = {name: index for index, name in enumerate(DOORKEY_STAGES)}
+    predictions = np.asarray(
+        [stage_indices[cluster_to_stage[str(int(cluster))]] for cluster in clusters],
+        dtype=np.int64,
+    )
+    output = {}
+    for group in sorted(set(groups.tolist())):
+        local = groups == group
+        local_stages = stages[local]
+        local_predictions = predictions[local]
+        output[str(group)] = {
+            "accuracy": float(np.mean(local_predictions == local_stages)),
+            "recall_by_stage": {
+                name: float(
+                    np.mean(
+                        local_predictions[local_stages == index] == index
+                    )
+                )
+                for index, name in enumerate(DOORKEY_STAGES)
+            },
+        }
+    return output
+
+
 def _write_chart(path: Path, methods: dict[str, dict[str, object]]) -> None:
     names = list(methods)
     colors = ("#68757d", "#d17031", "#2875a4", "#2b895f", "#955f9a")
@@ -165,6 +195,7 @@ def cluster_embeddings(
         trajectory_split = data["split"].astype(np.int8)
         generation_groups = data["generation_groups"].astype(np.int32)
     split = np.repeat(trajectory_split, 4)
+    frame_generation_groups = np.repeat(generation_groups, 4)
     train_indices = np.flatnonzero(split == 0)
     audit_indices = np.flatnonzero(split == 1)
     with np.load(embedding_path) as embeddings:
@@ -191,6 +222,12 @@ def cluster_embeddings(
             and min(metrics["audit_recall_by_stage"].values()) >= 0.75
             and metrics["audit_nmi"] >= 0.65
             and metrics["all_clusters_nonempty"]
+        )
+        metrics["audit_by_generation_group"] = _group_audit(
+            audit_clusters,
+            stage_labels[audit_indices],
+            frame_generation_groups[audit_indices],
+            metrics["cluster_to_stage"],
         )
         methods[name] = metrics
         assignments[f"{name}_train"] = train_clusters

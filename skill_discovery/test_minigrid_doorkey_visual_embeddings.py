@@ -8,6 +8,7 @@ import numpy as np
 
 from skill_discovery.cluster_minigrid_doorkey_visual_embeddings import (
     _cluster_method,
+    _group_audit,
     build_raw_representations,
 )
 from skill_discovery.encode_minigrid_doorkey_dinov2 import (
@@ -69,6 +70,26 @@ class DoorKeyVisualEmbeddingTest(unittest.TestCase):
         self.assertEqual(metrics["train_aligned_accuracy"], 1.0)
         self.assertEqual(metrics["audit_aligned_accuracy"], 1.0)
         self.assertTrue(metrics["all_clusters_nonempty"])
+
+    def test_group_audit_preserves_per_stage_recall(self) -> None:
+        clusters = np.asarray([0, 1, 2, 3] * 2)
+        stages = np.asarray([3, 2, 1, 0] * 2)
+        groups = np.asarray([37] * 4 + [47] * 4)
+        mapping = {
+            "0": "goal_reached",
+            "1": "door_opened",
+            "2": "key_acquired",
+            "3": "navigation_only",
+        }
+        output = _group_audit(clusters, stages, groups, mapping)
+        self.assertEqual(output["37"]["accuracy"], 1.0)
+        self.assertEqual(output["47"]["accuracy"], 1.0)
+        self.assertTrue(
+            all(
+                value == 1.0
+                for value in output["37"]["recall_by_stage"].values()
+            )
+        )
 
 
 if __name__ == "__main__":
