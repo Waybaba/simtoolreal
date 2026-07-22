@@ -3,9 +3,9 @@
 > [当前状态]
 > 分支：`codex/skill-discovery`
 >
-> 当前阶段：小环境路线已完成到Taxi-v4 full-domain visual gate；现有Hammer数据审计完成。`isaaclab510` physics smoke通过，但host与Docker的RTX rendering均在当前4x RTX 2080 Ti机器上启动即崩溃，Hammer视觉gate被硬件阻断。
+> 当前阶段：MountainCar visual metric在fresh natural lockbox的right-climb recall失败，按预注册停止。主线已切换到四对象MiniGrid GoToObject的policy-level raw-vs-visual skill-diversity对照；Hammer视觉gate仍被当前RTX renderer硬件阻断。
 >
-> 当前动作：停止RTX参数试错；先用`isaaclab510`在四张卡完成四条无渲染env0状态rollout，验证旧checkpoint是否真实移动/抬升hammer。新视频和object-centric/VLM gate保持未完成，不把state-only结果冒充视觉结果。
+> 当前动作：先冻结Phase 8A协议并运行四对象identity/reachability/RGB parser gate；通过后以相同PPO、观测、布局、动作与预算比较Raw DIAYN、Visual-semantic DIAYN和Visual-semantic Spread。首要结果是学得策略的语义交互多样性，不再把离线视觉分类准确率当作主结果。
 
 ## 一眼看完整流程
 
@@ -3306,6 +3306,58 @@ Run：`outputs/skill_discovery/mountaincar_continuous/fresh_natural_lockbox_2026
 
 > [里程碑]
 > Fresh lockbox给出稳定结论：learned metric已把none假阳性从67%压到约2%，但right-climb在自然成功轨迹上只有86% recall。Balanced synthetic pairs不足以保证自然时序部署；下一实验结构必须把**trajectory-level coverage**作为开发协议的一部分，同时保留独立fresh trajectory lockbox，而不是继续在MountainCar上调分类器。
+
+## Phase 8A：Four-object Visual-semantic Skill Diversity
+
+状态：`预注册；环境快速probe通过，正式audit与训练待运行`
+
+### 方向修正与研究问题
+
+MountainCar只有一辆车和背景，视觉几乎等价于一维位置；即使metric通过，也无法证明视觉语义会产生更有意义的skills。Phase 5ZO--5ZQ的GoToObject RGB object graph虽然完成了384万次online reward substitution，但旧标签把两个不同物体都折叠成同一个`adjacent/carried`，policy key还主动删除了type/color。因此旧结果只证明视觉parser能替代三类state label，**没有比较raw discovery与visual-semantic discovery学出的行为多样性**。
+
+本阶段使用MiniGrid公开`GoToObjectEnv`类的原生参数`size=8, numObjs=4, max_steps=64`。它不是新写的动力学或reward；只把公开类从注册表中的N2扩展到其原生支持的N4。四个对象由官方生成器随机选择key/ball/box与六种颜色，并保证同一layout内`(type, color)`不重复。每个episode按`(type, color)`字典序定义object rank 0--3，rank不依赖初始位置或mission target。
+
+核心因果问题固定为：**同一个skill-conditioned policy与相同训练预算下，把discovery表示从高体积raw grid state换成RGB trajectory中的object identity/relation，是否会让最终策略覆盖更多可解释的对象交互，而不只是不同站位和朝向。**
+
+### 环境与视觉 Gate
+
+- 正式audit固定seeds `0..1023`。每个layout必须恰好有四个不同visual identities，identity collision为0；重复reset的grid、agent pose和RGB hash必须exact一致。
+- 对每个seed和四个object ranks分别从新reset执行shortest-path `left/right/forward/pickup`脚本，共4,096条。每条必须在64步内先使agent正对目标对象，再真实拿起同一identity；mission target是否相同只做审计，不改变脚本。
+- RGB输入固定为official full render。Parser由起始帧建立四个identity集合，当前帧解析agent pose与floor objects；若floor object减少一个，只能由start/current object-set difference推断carried rank。Reward路径不得读取`carrying`、grid object、mission或target字段。
+- RGB gate要求agent pose、四个start identities、current floor identities、facing rank与carried rank相对oracle全部exact，4,096条scripted trajectories零错误；保存至少16个layout x 9 classes的contact sheet并人工确认。
+- 若任一gate失败，停止正式training，不修改颜色、模板、rank规则或seed。Renderer-aware parser通过只代表可审计的visual-semantic upper bound，不声称已经得到通用VLM。
+
+### 九类轨迹语义
+
+固定semantic classes为：
+
+1. `none`：未携带物体，且不与任何对象相邻；
+2. `facing_rank_0..3`：未携带物体，对应identity rank位于agent正前方一格；
+3. `carried_rank_0..3`：由start/current RGB object-set difference确认对应identity已被拿起。
+
+普通Manhattan adjacency会在一个agent cell同时邻接两个对象时产生歧义，因此不作为正式类。Facing relation与MiniGrid的pickup前置条件一致，且正前方一格至多有一个对象；正式audit仍须证明四个ranks在全部1,024个布局中都可到达。
+
+### Policy-level 对照
+
+Latent skills固定`K=9`。三组方法共享相同的Stable-Baselines3 PPO、网络、fully observed mission-free grid encoding、skill one-hot、五动作集合、layout seed流、64-step horizon和总timesteps。Policy observation可包含四个对象的外观与位置，但三组完全相同；`mission/targetType/target_color/target_pos/native reward`全部排除。唯一变化是intrinsic discriminator/reward读取的表示：
+
+- `raw_diayn`：标准online DIAYN，feature为当前mission-free full-grid state、agent direction和start frame的exact hash；不读取semantic class。
+- `visual_semantic_diayn`：相同DIAYN公式，feature换成冻结RGB start/current object graph得到的九类；不加coverage项。
+- `visual_semantic_spread`：在前一方法上增加现有semantic class occupancy correction，使九个等价类在reward中等权；不使用预先指定的skill-to-class assignment。
+
+先跑seed 7，训练预算固定为`500,000` timesteps、18个同步envs、PPO `n_steps=256`、batch 512、4 epochs，其余沿用仓库MiniGrid PPO默认值。Checkpoint固定`100k/200k/300k/400k/500k`。只有seed-7三组都完整结束才运行seeds `17/29`；不因某组早期曲线较差延长预算或更换seed。
+
+### 评价与判定
+
+- Evaluation固定为train-distribution 512 layouts/skill和fresh held-out 512 layouts/skill，deterministic policy；所有方法复用同一seed list。
+- Primary semantic metrics：`I(Z; C)`、每个skill purity、九类Hungarian matched rates、八个meaningful interaction classes的`coverage@0.50`、minimum/mean matched interaction rate和aggregate class entropy。
+- Raw behavior controls：unique terminal raw hashes、agent cell/direction coverage、mean pairwise endpoint distance，以及由raw endpoint预测skill的held-out accuracy。它们用于确认raw baseline确实学到可区分行为，而不是训练完全坏掉。
+- Seed-7 effect gate：`visual_semantic_spread`的meaningful `coverage@0.50 >= 6/8`，且至少比`raw_diayn`多3类；semantic MI至少高0.30 bit；mean matched interaction rate至少高0.15。Raw endpoint diversity可以更高，不构成semantic成功。
+- 三seed结论要求effect方向3/3一致，且visual method合并coverage至少`7/8`、semantic MI与mean matched interaction的bootstrap 95% CI均高于raw。Plain visual DIAYN用于区分收益来自表示本身还是额外class balancing，不以它通过作为主结论前提。
+- 每个method/seed保存config、reward counts、checkpoint curves、final outcome matrix、raw/semantic metrics、至少九条确定性视频与contact sheet。视频必须显示agent和四个对象，不能只展示数值。
+
+> [大计划]
+> 先完成可复现的四对象environment/RGB identity gate，再实现同一wrapper内的三种intrinsic feature。先用极短smoke验证数据流与视频，随后完整运行seed 7三组；长训练使用阻塞等待，每约5--10分钟只记一条日常log。effect gate通过后才补seeds 17/29与统计汇总。
 
 ## Phase 6：迁移到 Hammer
 
