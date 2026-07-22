@@ -2826,7 +2826,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/environment_audit_20260722
 
 ## Phase 5ZT：MountainCar Balanced RGB Position Metric
 
-状态：`预注册；未生成数据`
+状态：`data gate失败；未运行DINO或metric`
 
 ### 研究问题与限制
 
@@ -2853,6 +2853,18 @@ Run：`outputs/skill_discovery/mountaincar_continuous/environment_audit_20260722
 
 > [大计划]
 > CPU先生成并审计2,048张RGB；data gate通过后只用一张空闲GPU批量编码DINO。日常编码只写一行log，完成/失败才写里程碑。
+
+### Phase 5ZT 结果：Renderer Capacity Gate 失败
+
+Failure artifact：`outputs/skill_discovery/mountaincar_continuous/visual_dataset_20260722_163153/failure.json`
+
+- Reference split能够收满goal-region的256个unique hashes；audit split固定排除reference hashes后，经过预注册上限100,000次采样仍无法再收满256个，因此没有写出不完整dataset。
+- 失败诊断在冻结`[0.45,0.58]` goal interval均匀扫描8,192个合法float32 positions，只得到**289个unique RGB hashes**。Renderer不显示velocity，因此该区间最多可用的画面容量远小于两个splits所需的512个disjoint hashes。
+- 这是data protocol与renderer information capacity冲突，不是DINO或candidate表现。按gate不减少`256/class`、不扩大goal interval、不允许跨split重复；DINO encoding与median-background metric均未运行。
+- Final gate为fail。MountainCar环境本身仍通过Phase 5ZS；失败只关闭当前“单帧四区间、全hash唯一”的dataset设计。
+
+> [里程碑]
+> MountainCar证明了一个重要限制：连续state不等于连续视觉信息。Goal区间有大量不同float positions，但600px Pygame renderer只产生289种画面，无法支撑预注册的512个跨split唯一样本。下一设计必须在运行前按rendered equivalence classes定预算，或改用frame-pair/trajectory variation；不能靠重复帧假装数据量。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3293,6 +3305,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：五种子双实例random replay的state/reward/flags/RGB hashes全部exact equal；dynamics误差不超过`5.96e-8`，reward误差0。
 - Reachability：固定velocity-sign energy controller五个seeds均在84步内完成，四个ordered stages无跳跃；联系表人工通过。
 - 决定：保留MountainCar作为下一visual skill-discovery小环境。下一run只做balanced stage dataset与representation gate，不直接训练policy，不把scripted controller当作学习结果。
+
+### D-038：MountainCar Goal Region 只有 289 个 RGB Equivalence Classes
+
+- 日期：2026-07-22
+- 失败：reference goal-region收满256后，audit在100,000次尝试内无法收满另外256个disjoint hashes；data gate失败，DINO未运行。
+- 诊断：对冻结goal interval扫描8,192个positions只有289个unique RGB，低于协议要求的512。Velocity不进入renderer，不能提供额外视觉variation。
+- 决定：保留失败，不减quota、不复用hash、不扩大区间。任何下一dataset计划必须先审计各stage的rendered hash capacity，并优先考虑frame-pair表示真实velocity/momentum。
 
 ## 实验日志
 
