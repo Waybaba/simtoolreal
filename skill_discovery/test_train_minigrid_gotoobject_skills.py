@@ -43,6 +43,16 @@ class GoToObjectSkillTrainerTest(unittest.TestCase):
             ordered = sorted(row)
             self.assertAlmostEqual(ordered[-1], 1.0)
             self.assertAlmostEqual(ordered[-2], 0.0)
+        target_order = (2, 0, 1)
+        reordered = frozen_reward_matrix_from_metrics(
+            metrics,
+            calibration="runner_up_unit",
+            target_stage_order=target_order,
+        )
+        self.assertEqual(
+            tuple(max(range(3), key=row.__getitem__) for row in reordered),
+            target_order,
+        )
         config = GoToObjectTrainConfig(
             objective="frozen_matrix",
             frozen_reward_matrix=matrix,

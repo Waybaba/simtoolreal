@@ -32,6 +32,7 @@ class GoToObjectTrainConfig:
     frozen_reward_matrix: tuple[tuple[float, ...], ...] | None = None
     frozen_reward_source: str | None = None
     frozen_reward_calibration: str = "none"
+    frozen_reward_target_order: tuple[int, ...] | None = None
     reward_timing: str = "exact_terminal"
     seed: int = 7
     num_skills: int = 3
@@ -72,11 +73,18 @@ class GoToObjectTrainConfig:
             raise ValueError("unknown frozen reward calibration")
         if (
             self.objective != "frozen_matrix"
-            and self.frozen_reward_calibration != "none"
+            and (
+                self.frozen_reward_calibration != "none"
+                or self.frozen_reward_target_order is not None
+            )
         ):
             raise ValueError(
-                "frozen reward calibration requires frozen_matrix objective"
+                "frozen reward transforms require frozen_matrix objective"
             )
+        if self.frozen_reward_target_order is not None and sorted(
+            self.frozen_reward_target_order
+        ) != list(range(self.num_skills)):
+            raise ValueError("frozen reward target order must be a stage permutation")
         if self.reward_timing not in {"exact_terminal", "occupancy"}:
             raise ValueError("unknown reward timing")
         if self.learning_rate_mode not in {"visit_power", "constant"}:
@@ -175,6 +183,7 @@ def frozen_reward_matrix_from_metrics(
     metrics: dict[str, object],
     *,
     calibration: str = "none",
+    target_stage_order: tuple[int, ...] | None = None,
 ) -> tuple[tuple[float, ...], ...]:
     config = metrics["config"]
     reward_model = metrics["reward_model"]
@@ -205,6 +214,18 @@ def frozen_reward_matrix_from_metrics(
         reward = calibrated
     elif calibration != "none":
         raise ValueError("unknown frozen reward calibration")
+    if target_stage_order is not None:
+        if sorted(target_stage_order) != list(range(reward.shape[0])):
+            raise ValueError("target stage order must be a permutation")
+        top_stage_by_row = np.argmax(reward, axis=1)
+        if sorted(int(stage) for stage in top_stage_by_row) != list(
+            range(reward.shape[1])
+        ):
+            raise ValueError("frozen reward rows do not have unique top stages")
+        row_by_stage = {
+            int(stage): row for row, stage in enumerate(top_stage_by_row)
+        }
+        reward = np.stack([reward[row_by_stage[stage]] for stage in target_stage_order])
     return tuple(tuple(float(value) for value in row) for row in reward)
 
 
@@ -599,6 +620,10 @@ def main() -> None:
         default="none",
     )
     parser.add_argument(
+        "--frozen-reward-target-order",
+        help="Comma-separated top-stage order for matrix rows, for example 2,0,1",
+    )
+    parser.add_argument(
         "--reward-timing",
         choices=("exact_terminal", "occupancy"),
         default="exact_terminal",
@@ -619,6 +644,16 @@ def main() -> None:
     args = parser.parse_args()
     frozen_matrix = None
     frozen_source = None
+    frozen_target_order = None
+    if args.frozen_reward_target_order is not None:
+        try:
+            frozen_target_order = tuple(
+                int(part) for part in args.frozen_reward_target_order.split(",")
+            )
+        except ValueError:
+            parser.error("--frozen-reward-target-order must contain integers")
+        if sorted(frozen_target_order) != list(range(len(GOTOOBJECT_STAGES))):
+            parser.error("--frozen-reward-target-order must be a stage permutation")
     if args.objective == "frozen_matrix":
         if args.frozen_reward_metrics is None:
             parser.error("frozen_matrix requires --frozen-reward-metrics")
@@ -628,17 +663,19 @@ def main() -> None:
         frozen_matrix = frozen_reward_matrix_from_metrics(
             source_metrics,
             calibration=args.frozen_reward_calibration,
+            target_stage_order=frozen_target_order,
         )
         frozen_source = str(args.frozen_reward_metrics.resolve())
     elif args.frozen_reward_metrics is not None:
         parser.error("--frozen-reward-metrics requires frozen_matrix objective")
-    elif args.frozen_reward_calibration != "none":
-        parser.error("--frozen-reward-calibration requires frozen_matrix objective")
+    elif args.frozen_reward_calibration != "none" or frozen_target_order is not None:
+        parser.error("frozen reward transforms require frozen_matrix objective")
     config = GoToObjectTrainConfig(
         objective=args.objective,
         frozen_reward_matrix=frozen_matrix,
         frozen_reward_source=frozen_source,
         frozen_reward_calibration=args.frozen_reward_calibration,
+        frozen_reward_target_order=frozen_target_order,
         reward_timing=args.reward_timing,
         seed=args.seed,
         episodes=args.episodes,

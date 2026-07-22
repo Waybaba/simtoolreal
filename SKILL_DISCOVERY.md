@@ -1695,12 +1695,38 @@ Run：`gotoobject_balanced_occupancy_seed7_formal_20260722_080420`
 
 ## Phase 5O：Frozen Matrix Row-affine Calibration
 
-状态：`20k单变量校准计划已冻结，尚未运行`
+状态：`20k校准完成；spread通过、semantic未过，但发现assignment/layout confound`
 
 - 对Phase 5L semantic与spread的同一最终matrix逐行变换：减去runner-up reward，再除以`top-runner_up` gap，使每个skill的top stage为1、runner-up为0，其余stage可为负。
 - 该变换对每个skill是positive affine transform；固定64步horizon下不改变stage reward排序或理论最优policy，只改变数值尺度与Q=0 initialization关系。
 - 其余设置保持Phase 5N不变：fresh Q、`N^-0.6`、occupancy、seed 7、20k、2k/512、last-3。两个source matrices并行运行。
 - 门控仍为independent-final三类各 `>=0.90`且last-3全部通过。若通过，下一算法需显式做reward calibration再block-wise update；若失败，不再继续tabular reward shaping sweep，汇总后转向更标准的policy/discriminator优化器。
+
+### 20k Row-affine 结果
+
+| Source matrix | Far | Adjacent | Carried | Last-3 | Gate |
+| --- | ---: | ---: | ---: | :---: | :---: |
+| Semantic calibrated | 0.990 | 0.988 | 0.836 | fail | fail |
+| Spread calibrated | 0.996 | 0.994 | 0.979 | pass | pass |
+
+- Runs：`gotoobject_calibrated_semantic_source_seed7_diagnostic_20260722_091709`与`gotoobject_calibrated_spread_source_seed7_diagnostic_20260722_091718`。
+- Spread fixed-eval last-3 carried为 `0.965/0.973/0.980`，三次均过门；independent-final 3x3 matrix接近permutation matrix。
+- 人工审计确认spread carried执行真实pickup：floor objects `2->1`且 `carrying=[ball, yellow]`。
+- 但source matrices的assignment不同：spread是rows `carried/adjacent/far`，semantic是 `adjacent/far/carried`。Round-robin训练让不同skill index看到不同episode-seed residue；已通过的balanced oracle也恰好令skill0负责carried。因此不能把当前差异全部归因于coverage term。
+
+![Calibrated spread 20k rollout audit](outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_calibrated_spread_source_seed7_diagnostic_20260722_091718/policy_rollout_audit.png)
+
+> [方向变化]
+> 在声称coverage-aware spread优于plain semantic前，先控制skill-row assignment与训练layout子集的混杂。Phase 5P只重排matrix rows，不改变row内reward。
+
+## Phase 5P：Canonical Assignment Audit
+
+状态：`20k assignment-control 计划已冻结，尚未运行`
+
+- 对Phase 5O两个calibrated matrices按各row最高reward所对应stage重排为同一target order：skill0=carried、skill1=far、skill2=adjacent，即 `[2,0,1]`，与seed-7 balanced oracle一致。
+- 每个discovered row的三个reward数值完全不变；只控制哪一个skill index和训练seed residue负责哪一种stage。
+- 其余保持Phase 5O不变：fresh Q、20k、occupancy、`N^-0.6`、2k/512、last-3，两组并行。
+- 门控仍为independent-final三类各 `>=0.90`且last-3通过。若两者都通过，Phase 5O差异主要来自assignment confound；若只有spread通过，才支持coverage-aware landscape额外有益。该审计后停止tabular shaping sweep并汇总下一算法。
 
 ## Phase 6：迁移到 Hammer
 
