@@ -3,9 +3,9 @@
 > [当前状态]
 > 分支：`codex/skill-discovery`
 >
-> 当前阶段：Phase 2 已完成。5-seed 数值 gate 和 deterministic policy rollout visual audit 均通过，准备进入 Phase 3。
+> 当前阶段：Phase 3 fixed-layout gate 已通过但 layout generalization 失败；Phase 4A 官方 MiniGrid 环境审计已通过，Phase 4B 正在定位长时序 PPO 的部署失败。
 >
-> 当前动作：Pusher-Cup 环境单元测试和 scripted visual audit 已通过；下一步运行 offline reachability audit。仍不训练 Hammer、不调用 VLM，也不使用物理引擎。
+> 当前动作：Phase 4B balanced-oracle PPO v2 已完整运行。训练/随机策略能稳定到达 goal，但 deterministic policy 与四技能分化均失败；下一轮只移除 PPO entropy bonus，检验高熵策略是否是控制能力无法凝结为稳定 skill 的主因。
 
 ## 一眼看完整流程
 
@@ -18,9 +18,10 @@ flowchart TD
     C -->|通过| D["Phase 3: Pusher-Cup 接触控制"]
     C -->|不通过| C1["检查 reward、探索和 metric"]
     C1 --> C
-    D --> E["Phase 4: 图像 / VLM 语义度量"]
-    E --> F["Phase 5: Hammer 迁移实验"]
-    F --> G["Phase 6: 组合性与下游任务"]
+    D --> E["Phase 4: 现成轻量 benchmark 桥接"]
+    E --> F["Phase 5: 图像 / VLM 语义度量"]
+    F --> G["Phase 6: Hammer 迁移实验"]
+    G --> H["Phase 7: 组合性与下游任务"]
 ```
 
 核心顺序是：先证明“什么距离才有意义”，再证明它能指导快速 skill discovery，之后才付出 Hammer 和 VLM 的训练成本。
@@ -54,7 +55,8 @@ Hammer 同时包含高维机械臂控制、接触动力学、长时间 PPO 训�
 | Shape World / Point-Cup offline | 无训练 | 否 | 否 | metric 是否表达我们要的语义 |
 | Point-Cup discovery | 很低 | 否 | 否 | metric 是否能指导探索 |
 | Pusher-Cup | 低 | 是 | 可选 | 语义行为是否可控且需要交互 |
-| Visual probe | 低 | 是 | 是 | foundation-model space 是否接近 oracle |
+| MiniGrid / MuJoCo public bridge | 低到中 | 任务相关 | 可选 | 结论是否离开自建环境仍成立 |
+| Visual probe | 低到中 | 是 | 是 | foundation-model space 是否接近 oracle |
 | Hammer | 高 | 是 | 是 | 方法能否迁移到真实研究环境 |
 
 ## Phase 0：研究定义
@@ -287,7 +289,7 @@ Visual audit 重新加载 seed 7 的保存策略，关闭 epsilon exploration，
 
 ## Phase 3：Pusher-Cup 规则接触控制
 
-状态：`环境与 visual audit 通过，进行 reachability audit`
+状态：`Phase 4A 通过；Phase 4B v1 失败，准备 balanced-oracle control diagnostic`
 
 将“直接控制球”改成“控制一个二维 pusher，只有图形重叠或接触时球才按规则移动”。它仍然不是物理模拟，只加入最小 manipulation constraint：
 
@@ -347,7 +349,387 @@ Run：`environment_audit_20260722_025259`
 > [结果]
 > 最小接触规则和 ball-based success definition 通过。这个结果只证明环境可表达三个事件，不证明无监督探索能够发现它们。
 
-## Phase 4：图像与 VLM Metric
+### Offline Reachability 结果
+
+Run：`reachability_audit_20260722_025515`
+
+5 个 seeds 各运行 8192 条固定 reset 的自然随机轨迹，共 40,960 episodes：
+
+| Class | Mean rate | Total count |
+| --- | ---: | ---: |
+| `no_contact` | 0.79490 | 32,559 |
+| `contact_without_inside` | 0.20508 | 8,400 |
+| `ball_inside` | 0.0000244 | 1 |
+
+独立 scripted audit 对每个 intent 运行 512 条带轻微动作扰动的轨迹，三个 class 的 recall 均为 1.0，confusion matrix 为严格对角矩阵。环境可达，但自然随机探索中的 `ball_inside` 约四万分之一，是一个真实的 rare mode。
+
+### Training Signal Check v1：失败
+
+Run：`pusher_diayn_semantic_seed7_20260722_025919`
+
+800 iterations、512 episodes / skill / iteration。Evaluation 关闭探索，每个 skill 运行 2048 episodes：
+
+- skill 0：`contact_without_inside=0.9961`，mean ball path `0.2244`。
+- skill 1：`no_contact=1.0000`。
+- skill 2：再次坍缩为 `no_contact=1.0000`。
+- 最佳 permutation 的 matched rates 为 `0.9961 / 1.0000 / 0.0000`。
+- Semantic MI 为 `0.9161 bits`，但 specialization gate 和 last-20 stability gate 均失败。
+- 800 个训练 iterations 中有 408 个出现至少一条入杯轨迹，但单个 iteration 的最高 inside rate 仅 `0.0078`，信号不足以形成可复现 policy。
+
+> [失败记录]
+> v1 能稳定分开 `no_contact` 与 `contact_without_inside`，却无法把约四万分之一的 `ball_inside` 事件放大成第三个 skill。高 semantic MI 不能替代三类 gate；本轮明确判失败。
+
+### Training v2 预注册调整
+
+唯一变化是 exploration 的时间相关性：
+
+- v1 的 epsilon action 每一步独立采样，形成近似随机游走。
+- v2 在触发 epsilon exploration 时，随机选一个 action 并持续 12 steps。
+- burst action 不读取 cup、ball、class 或 reward，不是 scripted push-right policy。
+- Random、Raw、Semantic 三种方法使用完全相同的 burst 规则。
+- deterministic evaluation 仍设置 epsilon 为 0，不允许 burst 帮忙完成任务。
+- 环境、reset、3 classes、policy table、discriminator feature、训练预算和 Phase 3 gate 全部不变。
+
+先只重跑 semantic seed 7。若仍失败，则不继续堆训练预算；下一项诊断将比较“终点 reward credit assignment”与“轨迹事件首次发生时的 reward”，并在修改前再次写计划。
+
+> [失败记录]
+> 首次 v1 运行在 sampler 中遇到 float32 cumulative probability 略小于 1，产生越界 action id 9。sampler 已显式裁到合法 action 范围并加入回归测试；上述 v1 结果来自修复后从头运行，不受这个程序错误影响。
+
+### Training Signal Check v2：仍失败
+
+Run：`pusher_diayn_semantic_seed7_20260722_030257`
+
+12-step random burst 提高了 exploration coverage，但没有产生第三个稳定 skill：
+
+- 最佳 matched rates：`1.0000 / 0.9546 / 0.0000`。
+- evaluation 中最高 final inside rate 为 `0.0449`。
+- 最后 20 iterations 的 specialization gate fraction 仍为 `0.0`。
+- 关闭 exploration 的独立诊断显示，contact skill 有 `0.2769` 的轨迹曾经进入 cup，但只有 `0.0449` 最终留在 cup；terminal-only class 抹掉了大部分 transient entering events。
+
+> [失败记录]
+> 与语义无关的 persistent exploration 让策略更常到达杯区，但 terminal DIAYN 仍停在两个有效 classes。v2 不通过 Phase 3 gate，不通过增加 iterations 追结果。
+
+### Training v3：Balanced Semantic Oracle 诊断计划
+
+原始项目假设不仅要求 MI，还明确要求 `fairly covering semantic equivalence classes`。v3 因此先测试一个诊断上界：
+
+- 三个 skills 与三个 semantic classes 做一一匹配；映射由 seed 决定的随机 permutation 产生，class 名称不绑定固定 skill id。
+- 每条 trajectory 仅在终点 class 匹配该 skill 的当前 target class 时得到 oracle reward。
+- 仍使用 v2 相同的 12-step task-agnostic exploration、policy、reset、episode length、训练预算和 evaluation gate。
+- Random、Raw DIAYN、Semantic DIAYN 保留为对照；新增方法明确命名为 `Semantic balanced oracle`。
+- 它使用人工 class identity，因此只回答“若公平覆盖目标明确，当前控制器能不能学会三类”，不能回答 learned metric 或 unsupervised objective 是否成立。
+
+若 oracle 仍失败，问题主要在 sparse credit/control，应改 transition-level reward 或 curriculum。若 oracle 通过而 Semantic DIAYN 失败，问题主要在 MI objective 的局部最优，下一步应实现无需 class label 的 semantic spread / balanced assignment，而不是继续调环境。
+
+### Training v3 结果：Deterministic 通过，完整 Gate 未通过
+
+Run：`pusher_diayn_semantic_balanced_seed7_20260722_030718`
+
+Seeded target permutation 为 `[no_contact, ball_inside, contact_without_inside]`。关闭探索的 2048 episodes / skill evaluation：
+
+| Target | Matched rate | Contact rate | Final inside | Mean ball path |
+| --- | ---: | ---: | ---: | ---: |
+| `no_contact` | 0.9644 | 0.0356 | 0.0000 | 0.0028 |
+| `ball_inside` | 0.8970 | 1.0000 | 0.8970 | 0.5483 |
+| `contact_without_inside` | 0.9736 | 1.0000 | 0.0264 | 0.3613 |
+
+Semantic MI 为 `1.2882 bits`，terminal graph MI 为 `1.4019 bits`。Deterministic specialization gate 通过，说明当前控制、探索数据和 terminal reward 足以学会真正的入杯 policy。
+
+完整 gate 仍未通过：v3 尾段 `epsilon=0.08` 时一次 burst 持续 12 steps，因此训练 batch 中实际被随机动作占据的比例远高于 8%；last-20 specialization fraction 为 `0.0`。这不是隐藏掉的测量问题，当前预注册 full gate 明确判失败。
+
+### Training v3b 预注册调整
+
+- 唯一变化：`epsilon_end: 0.08 -> 0.00`，仍从 `0.35` 线性退火。
+- burst length、oracle targets、policy、环境、reset、800 iterations、512 episodes / skill、evaluation 和 thresholds 均不变。
+- 目的：让最后 20 个 training batches 测量 learned policy，而不是持续注入的 12-step random macro-actions。
+- v3b 仍只是 oracle diagnostic；即使 full gate 通过，也不能作为最终方法。
+
+### Training v3b 结果：单 Seed 诊断通过
+
+Run：`pusher_diayn_semantic_balanced_seed7_20260722_030919`
+
+- Deterministic matched rates：`0.9995 / 0.9917 / 0.9927`。
+- 入杯 skill final inside rate：`0.9917`；mean ball path：`0.5268`。
+- Semantic MI：`1.5376 bits`；terminal graph MI：`1.4270 bits`。
+- Last-20 specialization fraction：`1.0`，mean matched rate：`0.9637`。
+- Evaluation gate 与 training stability gate 均通过。
+
+Visual audit 重新加载保存策略、关闭探索，并对每个 skill rollout 128 次。抽样 matched rates 为 `1.0000 / 0.9844 / 0.9922`。联系表中每个 skill 展示 3 条轨迹和 7 个时间点；人工确认 no-contact skill 不移动 ball、inside skill 真正把 ball 推入 cup、contact skill 移动 ball 但停在杯外。
+
+![Pusher-Cup balanced oracle rollout audit](outputs/skill_discovery/pusher_cup_training/pusher_diayn_semantic_balanced_seed7_20260722_030919/policy_rollout_audit.png)
+
+> [结果]
+> v3b 单 seed 诊断通过。这证明显式公平覆盖的 oracle objective 能控制当前环境，但不证明无监督 semantic spread 已解决；Phase 3 方法 gate 仍保持未完成。
+
+### Multi-seed 诊断计划
+
+- Seeds：`7, 17, 27, 37, 47`。
+- Methods：Random policy、Raw endpoint DIAYN、Semantic terminal-class DIAYN、Semantic balanced oracle。
+- 每项：800 iterations、512 episodes / skill / iteration、2048 deterministic evaluation episodes / skill。
+- 所有方法共享 12-step exploration burst，并从 epsilon `0.35` 线性退火到 `0.00`。
+- 共 20 个 runs；使用 4 个并行 CPU processes。代码是纯 NumPy，GPU 在这里没有可执行 kernel，因此不占用 4 张 GPU。
+- Oracle diagnostic gate：至少 4/5 seeds 同时通过 deterministic evaluation 与 last-20 stability；所有 baseline 的 semantic MI、terminal graph MI、pusher/ball coverage 和真实轨迹一并报告。
+- 即使 oracle 5/5 通过，也只定位 objective gap；下一大步必须先写出无需人工 class target 的 balanced semantic spread 计划，不能直接跳到公开 benchmark 声称方法已完成。
+
+### Multi-seed 诊断结果
+
+Aggregate run：`pusher_multiseed_20260722_0312`
+
+| Method | Mean matched | Min matched | Highest inside | Semantic MI | Terminal graph MI | Pusher coverage | Ball coverage | Stable pass |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Random | 0.3369 | 0.0002 | 0.0003 | 0.0002 | 0.0356 | 0.5877 | 0.2123 | 0 / 5 |
+| Raw DIAYN | 0.6253 | 0.0333 | 0.0351 | 0.6864 | **1.5850** | 0.9111 | 0.1901 | 0 / 5 |
+| Semantic DIAYN | 0.6612 | **0.0000** | 0.0157 | 0.9150 | 0.8581 | 0.8889 | **0.3778** | 0 / 5 |
+| Semantic balanced oracle | **0.9940** | **0.9917** | **0.9917** | **1.5320** | 1.3984 | **0.9284** | 0.3531 | **5 / 5** |
+
+Balanced oracle 的 class-specific matched means 为 `no_contact=0.9963`、`contact_without_inside=0.9940`、`ball_inside=0.9917`，入杯 skill mean ball path 为 `0.5282`，last-20 gate 每个 seed 都是 1.0。
+
+Raw DIAYN 的 terminal graph MI 达到 3 skills 的理论上限 `log2(3)=1.5850`，是最强几何终点分离 baseline；它仍没有发现稳定入杯。Semantic DIAYN 在 5 个 seeds 中都精确学到 no-contact 和 contact，但第三个 skill 重复已有 class，说明高 MI 本身不保证公平 semantic coverage。
+
+四种方法的 seed 7 deterministic audit 每个 skill 展示 2 条轨迹。人工确认 Random 是随机移动，Raw 主要把 pusher/ball 送到不同几何终点，Semantic DIAYN 只有两个语义模式，只有 Balanced oracle 同时产生三种真实 object-interaction behaviors。
+
+![Pusher-Cup four-method policy audit](outputs/skill_discovery/pusher_cup_training/pusher_multiseed_20260722_0312/policy_rollout_audit.png)
+
+完整汇总：`outputs/skill_discovery/pusher_cup_training/pusher_multiseed_20260722_0312/summary.json`
+
+> [结果]
+> Oracle diagnostic gate 通过，Phase 3 method gate 明确保持失败。证据定位到 objective gap：人工指定公平覆盖时控制可行，plain MI 不会自动公平覆盖稀有 semantic class。
+
+### Training v4：无 Target Semantic Spread 计划
+
+令 `c = phi(tau)` 为 trajectory 的 semantic class，`K=3`。保留 DIAYN reward，并显式提高整体 semantic occupancy entropy：
+
+`r = log q(z | c) - log p(z) + lambda * [-log(K * p(c))]`
+
+- 第一项保持 skill 可区分性。
+- 第二个 coverage term 对高于均匀占比的 class 给负值，对低于均匀占比的 rare class 给正值。
+- `p(c)` 使用带 pseudocount 和 exponential decay 的全 population moving counts。
+- 首轮固定 `lambda=1.0`，不做看结果后的 sweep。
+- 不设 skill-to-class mapping、不使用 seeded target permutation；哪个 skill 占据哪个 class 完全由训练产生。
+- Semantic representation 仍是人工 oracle class，因此这是“objective probe”，还不是 learned/VLM representation 结果。
+- 环境、burst exploration、epsilon `0.35 -> 0.00`、policy、reset、800 iterations、训练量和 Phase 3 gate 全部保持不变。
+
+这个目标等价于在 MI 外额外提高一次 `H(C)` 权重，直接对应原始笔记中的 `fairly covering semantic equivalence classes`，而不是事后给每个 skill 指定 goal。
+
+先跑 seed 7：若 evaluation 和 last-20 gate 都通过，再跑 5 seeds；若所有 skills 一起追逐 rare class 或仍停在两类，则判简单 entropy reweighting 失败，下一步再考虑 continuous semantic distance / population optimal transport，不调 `lambda` 追单点成功。
+
+### Training v4 单 Seed 结果：通过
+
+Run：`pusher_diayn_semantic_spread_seed7_20260722_032008`
+
+- 无 skill-to-class target；输出中的 `balanced_target_classes` 为 `null`。
+- Deterministic matched rates：`1.0000 / 0.9961 / 0.9795`。
+- 入杯 skill final inside rate：`0.9795`；mean ball path：`0.5456`。
+- Semantic MI：`1.5244 bits`；terminal graph MI：`1.4614 bits`。
+- Last-20 specialization fraction：`1.0`；mean matched rate：`0.9562`。
+- 最后一轮 population coverage reward 已接近均衡后的 0；按 skill 分别为 `-0.0194 / -0.0695 / +0.0935`，rare inside class 仍得到轻微正 reweighting。
+
+128-rollout visual audit matched rates 为 `1.0000 / 0.9922 / 0.9609`。人工确认三个 skills 真实对应 no-contact、contact-but-outside 和 ball-inside。
+
+![Pusher-Cup semantic spread rollout audit](outputs/skill_discovery/pusher_cup_training/pusher_diayn_semantic_spread_seed7_20260722_032008/policy_rollout_audit.png)
+
+> [结果]
+> 这是第一个不指定 class target 而通过完整单-seed gate 的方法结果。representation 仍是 oracle class，所以只能称为 semantic objective proof，不是 VLM 方法完成。
+
+### Training v4 Multi-seed Gate
+
+- Seeds：`7, 17, 27, 37, 47`，配置与单 seed 完全一致。
+- 只新增 5 个 `semantic_spread` runs；Random、Raw、Semantic DIAYN、Balanced oracle 复用 `pusher_multiseed_20260722_0312`，避免重复计算。
+- Method gate：至少 4/5 seeds 同时通过 deterministic evaluation 和 last-20 stability；三类 mean matched rates 均至少 0.70；inside skill mean ball path 至少 0.40；代表 seed visual audit 通过。
+- 继续完整报告 geometry/coverage 指标，特别检查 semantic spread 是否通过坍缩 ball geometry 换取三类成功。
+- 若通过，Phase 3 固定-layout method gate 才标记完成；下一步先做 held-out layout/shape nuisance，再进入公开 MiniGrid bridge。
+
+### Training v4 Multi-seed 结果：Fixed-layout Gate 通过
+
+Aggregate run：`pusher_spread_multiseed_20260722_0322`
+
+- 5/5 seeds 同时通过 deterministic evaluation 与 last-20 stability。
+- Mean matched rate：`0.9922`；mean minimum matched rate：`0.9805`。
+- Class-specific means：`no_contact=1.0000`、`contact_without_inside=0.9960`、`ball_inside=0.9805`。
+- Semantic MI：`1.5263 bits`；terminal graph MI：`1.4561 bits`。
+- Inside ball path：`0.5454`；pusher terminal coverage：`0.9111`。
+- Ball terminal coverage：`0.0938`，显著低于 Semantic DIAYN 的 `0.3778`。该方法覆盖了语义 classes，但类内 ball geometry 较窄；这是限制，不作为无关指标删除。
+
+五方法 seed 7 visual audit 通过。Semantic spread 抽样 matched rates 为 `1.0000 / 0.9922 / 0.9688`，画面确认入杯 skill 真实推动 red ball 进入 cup。
+
+![Pusher-Cup semantic spread multi-method audit](outputs/skill_discovery/pusher_cup_training/pusher_spread_multiseed_20260722_0322/policy_rollout_audit.png)
+
+完整汇总：`outputs/skill_discovery/pusher_cup_training/pusher_spread_multiseed_20260722_0322/summary.json`
+
+> [结果]
+> `phase_3_method_gate_passed=true`，但范围严格限定为 fixed layout + oracle semantic representation。Learned/VLM representation、layout generalization 和公开 benchmark 尚未完成。
+
+### Held-out Layout Audit 计划
+
+不重新训练，直接加载 5 个 semantic-spread policies，在 12 个训练中未出现的 layouts 上 evaluation：
+
+- 9 个 position layouts：cup `x in {0.25, 0.35, 0.45}`，`y in {-0.20, 0.00, 0.20}`，axes 固定 `(0.14, 0.16)`。
+- 3 个 shape layouts：center 固定 `(0.35, 0.00)`，axes 分别 `(0.10, 0.20)`、`(0.20, 0.10)`、`(0.18, 0.18)`。
+- 每个 policy/layout 使用 512 deterministic episodes / skill；不改 policy observation，也不做 adaptation。
+- Generalization gate：12 个 layouts 中至少 9 个保持三类 matched rates 均至少 0.70，且 inside skill ball path 至少 0.40；5 seeds 中至少 4 个满足。
+- 同时保存 base-layout control，确认加载/evaluation 管线没有改变原结果。
+
+当前 policy 只观察 absolute pusher/ball grid，没有 cup layout input，因此这个 audit 很可能失败。失败仍有价值：它能证明 fixed-layout semantic coverage 不等于 relational generalization。根据“尽快使用现成环境”的方向，若失败将记录为限制并把 relative/layout-aware observation 要求带入 MiniGrid bridge，不在自建环境继续做长超参循环。
+
+### Held-out Layout Audit 结果：失败
+
+Artifact：`pusher_spread_multiseed_20260722_0322/layout_generalization_audit.json`
+
+- Base-layout control：5/5 policies 均保持通过，排除加载或 evaluator 改变。
+- 每个 seed 都只通过 4/12 layouts；要求是至少 9/12，因此 seeds passed 为 0/5。
+- 通过项一致：训练中心 `(0.35, 0.00)` 的原尺寸，以及同中心的三个 axes/shape variations。
+- 所有 `y=+/-0.20` position shifts 失败；`x=0.25/0.45` 且 `y=0` 也失败。
+- Seed 7 例子：base matched rates `1.000/0.992/0.984`；center `(0.25,0)` 的 inside matched rate 仅 `0.020`，center `(0.45,0)` 仅 `0.123`。
+
+联系表的 12 行按 9 个 position layouts、3 个 shape layouts 排列；绿条为通过、红条为失败。画面确认 shifted layouts 中 ball 常经过后离开、停在旧 center 附近或根本没有对准新 y，而不是 evaluator 标签错误。
+
+![Pusher-Cup held-out layout audit](outputs/skill_discovery/pusher_cup_training/pusher_spread_multiseed_20260722_0322/layout_generalization_audit.png)
+
+> [失败记录]
+> Fixed-layout semantic spread 不具有 relational layout generalization。根因与接口一致：policy state 只有 absolute pusher/ball grid，没有 cup center/axes。当前结论不能外推到位置变化。
+
+> [方向变化]
+> 不在自建环境继续加入 relative observation、domain randomization 和新 sweep。把“policy 必须观察 task-relevant relation/layout”作为公开 benchmark 的设计要求，立即转入 MiniGrid bridge。
+
+## Phase 4：现成轻量 Benchmark 桥接
+
+状态：`Phase 4A 通过；Phase 4B v1/v2 失败，准备低熵 control diagnostic`
+
+自建 Point/Pusher-Cup 只用于初期因果检验，不作为最终实验证据。通过后按“简单到复杂”迁移到公开环境：
+
+1. 首选 `MiniGrid-DoorKey-8x8-v0`：公开、快速、离散 7-action、局部 `7x7x3` image observation；语义事件天然包含取 key、开 door、到 goal。官方说明它是 sparse-reward 且适合 curiosity/curriculum 实验：[MiniGrid DoorKey documentation](https://minigrid.farama.org/main/environments/minigrid/DoorKeyEnv/)。
+2. 若 DoorKey 上仍能复现 representation effect，再进入 `Pusher-v5`：公开 Gymnasium MuJoCo 环境，23 维 observation、7 维 torque action、100-step episode，任务是用多关节臂把 cylinder 推到 target：[Gymnasium Pusher documentation](https://gymnasium.farama.org/environments/mujoco/pusher/)。
+3. `FetchPush-v4` 作为更接近机械臂但更复杂的备选；它用 4 维 Cartesian gripper displacement、默认 50 steps：[Gymnasium-Robotics FetchPush documentation](https://robotics.farama.org/main/envs/fetch/push/)。只有 Pusher-v5 无法表达所需事件或接口更适合复用时才选它，不并行扩张范围。
+
+Bridge gate 会在实际安装前冻结：现成环境版本、semantic events、raw/semantic 唯一变化变量、训练预算、至少 5 seeds、原生 reward 与我们指标的关系，以及 deterministic 视频审计。所有新依赖继续安装在 `/home/wang100/data/conda/envs/`，不占 home 目录。
+
+### Phase 4A：MiniGrid DoorKey 环境审计计划
+
+先不训练，按以下顺序验证官方环境与语义定义：
+
+1. 在 `/home/wang100/data/conda/envs/skill-discovery` 安装并记录 `minigrid`、`gymnasium`、`pygame` 精确版本；不写入 home Conda 路径。
+2. Smoke test `MiniGrid-DoorKey-5x5-v0` 与主实验 `MiniGrid-DoorKey-8x8-v0`：reset、7 个官方 actions、partial symbolic observation、`rgb_array` render、seed reproducibility。
+3. 不修改 MiniGrid dynamics，读取官方 grid/object state 定义四个 mutually exclusive trajectory stages：
+   - `navigation_only`：尚未拿 key。
+   - `key_acquired`：携带 key、door 仍 locked/closed。
+   - `door_opened`：door 已 open、尚未到 goal。
+   - `goal_reached`：原生 environment termination/reward 成功。
+4. 写一个只用于 audit 的 shortest-path scripted solver，真实执行 pickup/toggle/forward actions，依次经过四个 stages；它不进入 skill-discovery training data。
+5. 5 seeds 随机策略 reachability audit，报告四个 stages 的自然频率，决定训练探索预算。
+
+Phase 4A Gate：
+
+- 两个 registered env ids 都能 reset/step/render；相同 seed 的 grid/object placement 可复现。
+- Scripted solver 真实执行官方 actions，并在一个 episode 中依次触发 key acquired、door opened、goal reached；原生 reward/termination 与 goal stage 一致。
+- 随机 rollout 与 scripted rollout 分开统计，不能把 solver 数据冒充 discovery。
+- 自动 semantic stages 与至少一张完整 trajectory contact sheet 人工一致。
+
+只有 4A 通过后才写训练计划。训练时所有方法必须观察 layout-relevant MiniGrid observation；不会重演 Pusher-Cup 隐藏 cup location 的接口错误。Native task reward 只用于 evaluation，不进入 unsupervised discovery reward。
+
+### Phase 4A 结果：通过
+
+Run：`doorkey_audit_20260722_033722`
+
+安装位置：`/home/wang100/data/conda/envs/skill-discovery`
+
+版本：`minigrid 3.1.0`、`gymnasium 1.3.0`、`pygame-ce 2.5.7`。
+
+- 5x5 与 8x8 都是官方 registered env，7 actions、`7x7x3` partial observation；RGB render 分别为 `160x160`、`256x256`。
+- 相同 seed 的 full grid encoding、agent position 和 direction 可复现。
+- BFS audit solver 只调用官方 left/right/forward/pickup/toggle actions。5 个 seeds 中，5x5 使用 8-12 actions，8x8 使用 13-22 actions；全部依次触发四 stages、原生 terminated=true、truncated=false、reward 约 0.96-0.98。
+- 8x8 随机策略共 2560 episodes 的 furthest-stage counts：`navigation=218`、`key=1972`、`door=310`、`goal=60`。Native random goal success 为 2.34%，比 Pusher-Cup inside 更容易，但仍是最稀有 stage。
+
+联系表两行分别为 5x5 与 8x8，四列为 reset/navigation、key acquired、door opened、goal reached。人工检查：黄色 key 被实际 pickup，黄色 locked door 被实际 toggle/open，红色 agent 最后进入绿色 goal。
+
+![MiniGrid DoorKey scripted stage audit](outputs/skill_discovery/minigrid_doorkey/doorkey_audit_20260722_033722/scripted_stage_audit.png)
+
+> [结果]
+> Phase 4A gate 通过。公开环境、semantic stage 定义、原生 success 与画面一致，可以开始写训练 wrapper；solver 数据不会进入训练。
+
+> [失败记录]
+> 首次 2560-episode audit 完整运行后，`action_space.n` 的 `numpy.int64` 导致 JSON serialization 失败。加入 NumPy scalar encoder 后，用 5 个 CPU processes 原样重跑 512 episodes / seed，45 秒完成；上面的结果来自修复后完整 run。
+
+### Phase 4B：5x5 PPO Signal Check 计划
+
+先在官方 `MiniGrid-DoorKey-5x5-v0` 验证训练接口，再进入 8x8：
+
+1. 使用官方 `FullyObsWrapper`，policy observation 为完整 `5x5x3` object/color/state encoding、agent direction 与 one-hot skill。它包含 layout information，避免 Pusher-Cup absolute-state 的不可辨识错误。
+2. 使用 Stable-Baselines3 PPO 的 `MlpPolicy` 与 vectorized env；RL update 不再手写。官方 PPO 和 vector-env 接口参考：[SB3 PPO](https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html)、[SB3 vectorized environments](https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html)。
+3. 4 个 skills 对应四个可能的 trajectory stages，但不预设映射。每个 vector env 固定一个 skill，4 skills 均匀分配；每个 episode layout 由官方 reset seed 生成。
+4. Gym wrapper 把 native reward 保存到 `info`，training reward 置零；中央 VecEnv reward wrapper 只在 episode end 根据 furthest stage 计算 intrinsic reward。
+5. Methods 保持同一 PPO/config：Random、Raw terminal observation DIAYN、Semantic stage DIAYN、Semantic spread。Balanced oracle 只在方法失败时作为诊断，不先运行。
+
+首轮固定配置：
+
+- 5x5、seed 7、8 envs（2 / skill）。
+- `250,000` total timesteps、`n_steps=256`、`batch_size=256`、`n_epochs=4`。
+- MLP `[256, 256]`、learning rate `2.5e-4`、entropy coefficient `0.01`。
+- CPU PyTorch；MiniGrid step 是主要瓶颈，小 MLP 不占 GPU。长命令使用工具允许的最长等待窗口。
+
+执行顺序与 gate：
+
+- 先实现 Gym/VecEnv wrapper tests：observation 包含 layout+skill；四 stages 的 terminal info 正确；native reward 不泄漏进 training reward；四 skills episode 数均衡。
+- 先跑 Semantic spread seed 7。Deterministic evaluation 每 skill 256 episodes，最佳 stage permutation 每类至少 0.70，goal skill 至少 0.70，且 last checkpoints 稳定，才运行同 seed baselines。
+- 保存 stage curves、PPO checkpoint、config、evaluation、完整 deterministic videos/contact sheet。
+- 若 5x5 通过，再在开始前单独写 8x8 的 1M-step、5-seed 计划；不直接把 5x5 结果外推。
+
+### Phase 4B Infrastructure 结果
+
+新增 data-env 版本：`torch 2.13.0+cpu`、`stable-baselines3 2.9.0`。
+
+- Official FullyObs grid 被 one-hot 编码为 object/color/state，不使用 hidden cup/goal shortcut。
+- Skill one-hot 单独拼接；Raw discriminator feature 明确排除 skill id。
+- 22 项完整测试通过，包括 SB3 `check_env`、native reward isolation、stage info、rare-stage coverage reward。
+- 4096-step end-to-end smoke 在约 6 秒内完成，成功保存 PPO policy、reward counts、checkpoint evaluation 与 SVG。
+
+### Phase 4B Training v1：失败
+
+Run：`doorkey5_ppo_semantic_spread_seed7_20260722_034516`
+
+250,000 timesteps，训练主体用时 `280.4s`。Final deterministic 256 episodes / skill：
+
+- 最佳 matched stage rates：`1.0000 / 0.0273 / 0.0000 / 0.0000`。
+- Door 与 goal stages 都没有 deterministic skill；native goal success 全部为 0。
+- 5 个 checkpoint 没有一次通过，last-checkpoint stability 失败。
+- Deterministic policy modes 大量选择 drop/done/no-op-like actions，所有 episode 都跑满 250 steps。
+
+训练期间并不是没看到 rare events：1059 个 completed training episodes 的 furthest-stage counts 为 `navigation=205`、`key=457`、`door=251`、`goal=146`。Reward model 最终 global stage probabilities 约为 `0.244/0.417/0.221/0.119`，coverage term 确实提高了后两类；但每个 stage 的 `q(skill | stage)` 仍在约 `0.19-0.31`，没有形成 skill-stage 关联。
+
+> [失败记录]
+> MiniGrid v1 的失败不是 reachability 或 reward leakage，而是 global semantic entropy 生效、per-skill MI symmetry 没打破。Pusher-Cup 的无 target spread 结果不能直接迁移到随机 layout + neural PPO。
+
+### Phase 4B Training v2：Balanced Oracle 诊断计划
+
+- 新增 objective `semantic_balanced`，用 seed 产生四 stages 的随机 permutation；skill id 与具体 stage 名不固定。
+- Terminal reward 仅为“furthest stage 是否等于该 skill target”；native reward 仍不进入 training。
+- PPO、FullyObs observation、7 actions、layout randomization、250k timesteps、8 envs、network、seed 与 evaluation gate全部保持 v1 相同。
+- 不限制 drop/done actions，不加 curriculum，不延长预算，确保只诊断 objective symmetry。
+- 若 oracle deterministic gate 通过：控制/PPO 可行，下一步设计无 target 的 prototype/assignment symmetry breaking。
+- 若 oracle 仍失败：先解决 long-horizon credit/action interface，再讨论 semantic objective。
+
+### Phase 4B Training v2 结果：确定性 Gate 失败
+
+Run：`doorkey5_ppo_semantic_balanced_seed7_20260722_035431`
+
+250,000 timesteps，训练主体用时 `279.9s`。Seeded target permutation 为 skill `0/1/2/3 -> goal/key/door/navigation`。
+
+- 训练 stochastic rollouts 确实访问了所有阶段；skill 0 的 343 个终局中有 178 个到达 goal，说明 full observation、动作接口和 PPO 至少具有任务可达性。
+- Final deterministic 256 episodes / skill 的最佳 matched rates 为 `0.0938 / 0.2031 / 0.9336 / 0.0000`；所有 deterministic native goal success 都为 0，checkpoint stability 与 signal gate 均失败。
+- 独立 stochastic evaluation（64 episodes / skill）中，target-goal skill 0 的 native success 为 **0.9844**，但四技能最佳 matched rates 为 `0.9844 / 0.0000 / 0.6719 / 0.0000`。其余 policies 几乎总会越过 key，不能稳定停在 navigation/key 阶段。
+- 因此 balanced terminal reward 已学到一个高成功率 stochastic goal controller，却没有产生四个可确定性部署的阶段技能。当前证据同时指向高 action entropy/终局 credit 与 stage-stopping objective，而不是环境不可达。
+
+> [失败记录]
+> Balanced oracle 没有通过预注册的 deterministic gate，不能据 stochastic goal success 宣称 Phase 4B 成功。尤其是随机采样 98.4% 与 deterministic 0% 的巨大差异，说明当前 policy distribution 的能力没有凝结到 argmax 行为。
+
+### Phase 4B Training v2b：移除 Entropy Bonus 计划
+
+下一轮仍使用官方 5x5、balanced target permutation、seed 7、250k timesteps、8 envs、terminal reward、网络与全部 evaluation gate。**唯一训练变量**为 `ent_coef: 0.01 -> 0.0`：
+
+- 若 target-goal skill 的 deterministic success 与四类 matched gate 同时通过，说明 v2 的主要问题是 entropy regularization；之后才回到无 target 方法。
+- 若 stochastic/deterministic gap 缩小但 navigation/key skills 仍失败，下一步改为 stage-transition/potential reward，解决“到达后无法停留”的终局 credit；不追加训练步数追结果。
+- 若 goal controller 也退化，则 entropy 不是单一根因，保留失败并直接进入 transition-level objective，不做系数 sweep。
+
+## Phase 5：图像与 VLM Metric
 
 状态：`等待小环境通过`
 
@@ -365,7 +747,7 @@ VLM 只离线编码关键帧或短 clip，并缓存 embedding，不放在每个 
 
 `different meaningful modes > same mode with nuisance variation`
 
-## Phase 5：迁移到 Hammer
+## Phase 6：迁移到 Hammer
 
 状态：`后续`
 
@@ -385,7 +767,7 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 注意：旧环境的 `successes` counter 曾经允许“接近目标但没有真正举起 hammer”的 false positive，因此它不能直接作为语义 ground truth。Hammer gate 必须使用 object motion、lift 条件与视频抽查。
 
-## Phase 6：组合性与下游任务
+## Phase 7：组合性与下游任务
 
 状态：`远期`
 
@@ -440,6 +822,9 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 > [问题 Q-006 | 非阻塞]
 > Pusher-Cup 保持真正的二维控制，但首轮固定对象布局和尺寸；形状/位置变化只作为 gate 通过后的 held-out audit。默认按这个顺序继续。
 
+> [问题 Q-007 | 非阻塞]
+> 自建 toy environment 通过后，先迁移到公开 `MiniGrid-DoorKey-8x8-v0`，再进入公开 MuJoCo `Pusher-v5`，最后才是 Isaac Lab Hammer。默认按这个由简单到复杂的顺序继续。
+
 ## 决策记录
 
 ### D-001：先验证 metric，再训练大环境
@@ -490,6 +875,107 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - 原因：它只增加“必须通过另一个对象进行控制”这一项变量，仍能快速定位失败原因。
 - Gate：3 个 semantic classes、5 seeds、策略轨迹人工审计；固定布局通过后才测形状变化。
 
+### D-008：自建环境后加入公开 Benchmark Bridge
+
+- 日期：2026-07-22
+- 决定：Point/Pusher-Cup 只承担初期实验；后续先迁移到 MiniGrid DoorKey，再迁移到 Gymnasium MuJoCo Pusher，之后才进入 Hammer。
+- 原因：自建环境便于控制变量，公开现成环境提供更有说服力和可复现的外部证据。
+- 约束：每次只增加一层复杂性；不会同时启动多个不同 benchmark 造成无法诊断的结果。
+
+### D-009：Pusher-Cup Training v1 失败并调整无语义探索
+
+- 日期：2026-07-22
+- v1 结果：两个 classes 稳定，`ball_inside` matched rate 为 0，Phase 3 gate 失败。
+- v2 唯一调整：所有方法共享 12-step random action burst；evaluation 不使用 burst。
+- 不变项：环境、标签、reset、policy、训练预算和 pass threshold。
+
+### D-010：v2 失败后使用 Balanced Oracle 定位 Objective 问题
+
+- 日期：2026-07-22
+- v2 结果：persistent exploration 增加 entering，但第三类 matched rate 仍为 0。
+- 诊断：deterministic trajectories 中 ever-inside 为 `0.2769`，final-inside 仅 `0.0449`。
+- 下一步：加入一一覆盖三类的 oracle reward 上界；明确不把它称为无监督方法。
+- 判断逻辑：oracle 通过意味着控制可行而 DIAYN objective 失败；oracle 失败意味着先解决 sparse transition credit。
+
+### D-011：Balanced Oracle 可控，但探索尾段污染 Stability Gate
+
+- 日期：2026-07-22
+- v3 deterministic：三类 matched rates 均高于 0.89，入杯 ball path 为 0.548，诊断目标实现。
+- v3 full gate：last-20 fraction 为 0，未通过。
+- 原因：8% 的 burst 触发概率配合 12-step persistence，使尾段 batch 仍包含大量随机宏动作。
+- v3b 唯一调整：epsilon 退火到 0；不修改方法目标和 pass threshold。
+
+### D-012：Balanced Oracle v3b 单 Seed 诊断通过
+
+- 日期：2026-07-22
+- 数值：三类 deterministic matched rates 全部高于 0.99，last-20 gate fraction 为 1.0。
+- 视觉：128-rollout 抽样与 9 条展示轨迹确认 ball 真正发生对应交互。
+- 限定：这是人工 semantic class target 的 oracle upper bound，不是最终 unsupervised method。
+- 下一步：固定配置运行 5-seed、4-method comparison，检验结论稳定性。
+
+### D-013：Oracle 5/5 通过，Plain MI 5/5 缺失稀有类
+
+- 日期：2026-07-22
+- Oracle：5/5 full gate，三类最低 matched rate 均值 0.9917。
+- Semantic DIAYN：0/5，ball-inside matched rate 每个 seed 均为 0。
+- Raw DIAYN：terminal graph MI 达理论上限，但 highest inside mean 仅 0.0351。
+- 决定：Phase 3 仍不通过；下一步用无 target 的 class-frequency entropy term 检验 semantic spread objective。
+
+### D-014：v4 使用 MI 加显式 Semantic Occupancy Entropy
+
+- 日期：2026-07-22
+- Objective：`DIAYN reward - log(K p(c))`，coverage weight 固定为 1.0。
+- 不使用：skill-class target、scripted training episode、goal reward 或结果后超参 sweep。
+- 判定：先单 seed；失败则转向 continuous distance / OT，而不是降低 gate。
+
+### D-015：v4 无 Target 单 Seed Gate 通过
+
+- 日期：2026-07-22
+- 数值：三类 matched rates 全部高于 0.97，last-20 fraction 为 1.0。
+- 视觉：128-rollout 抽样与 9 条轨迹一致，ball interaction 真实。
+- 限定：使用 oracle semantic class representation，但不使用 class target。
+- 下一步：固定 `lambda=1.0` 运行 5 seeds，不做 sweep。
+
+### D-016：v4 Fixed-layout Phase 3 Method Gate 通过
+
+- 日期：2026-07-22
+- 证据：Semantic spread 5/5 seeds；三类 minimum matched rate mean 0.9805；visual audit 通过。
+- 优势：不使用 skill-class target，显式 occupancy entropy 修复了 plain MI 的 rare-class 缺失。
+- 限制：oracle semantic class、fixed layout，且 ball terminal coverage 降至 0.0938。
+- 下一步：只做 held-out layout audit；不通过则带着限制进入公开 benchmark，而不是在 toy environment 继续扩张。
+
+### D-017：Layout Generalization 失败，停止扩张 Toy Environment
+
+- 日期：2026-07-22
+- 结果：每个 seed 4/12 layouts，0/5 seeds 通过；base control 与同中心 shape variations 正常。
+- 根因：absolute policy observation 缺少 cup layout，位置变化不可辨识。
+- 决定：不在 Pusher-Cup 继续 domain-randomization 调参；将 layout-aware observation 作为公开 MiniGrid 的硬要求。
+- 下一步：安装官方 MiniGrid，先完成 DoorKey smoke、scripted semantic audit 和 random reachability。
+
+### D-018：MiniGrid Phase 4A Gate 通过
+
+- 日期：2026-07-22
+- 版本：MiniGrid 3.1.0 / Gymnasium 1.3.0；5x5/8x8 seed、actions、render 均验证。
+- Scripted：2 个 env sizes x 5 seeds 全部经过四 stages 并获得原生 success。
+- Random 8x8：2560 episodes 中 60 个 goal success，四 stages 都自然出现。
+- 下一步：官方 FullyObs layout + skill observation，SB3 PPO 先做 5x5 semantic-spread single-seed signal check。
+
+### D-019：MiniGrid Semantic Spread PPO v1 失败
+
+- 日期：2026-07-22
+- Final：matched `1.000/0.027/0/0`，deterministic native success 为 0。
+- 训练 coverage：四 stages 都被采到，goal 146 episodes；global occupancy 更均衡。
+- 失败定位：`q(skill|stage)` 近似均匀，没有 per-skill specialization。
+- 下一步：balanced oracle 保持 PPO/config 不变，区分 symmetry objective 与 long-horizon control。
+
+### D-020：Balanced Oracle v2 学到 Stochastic Goal，但确定性分化失败
+
+- 日期：2026-07-22
+- Deterministic：四类 matched rates 为 `0.094/0.203/0.934/0`，native goal 为 0，gate 失败。
+- Stochastic：target-goal skill native success 为 0.984，但 navigation/key 两类 matched rate 为 0，仍不满足技能发现目标。
+- 定位：环境与 PPO 能产生 goal 行为；当前 high-entropy policy、terminal credit 和 stage stopping 共同妨碍稳定部署。
+- 下一步：只把 entropy coefficient 从 0.01 降至 0；若仍失败，转向 transition-level shaping，不做系数或预算 sweep。
+
 ## 实验日志
 
 ### 2026-07-22：项目启动
@@ -535,3 +1021,94 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 > [计划]
 > 下一步量化自然随机探索中的三类频率，并用独立 scripted audit 确认每一类都通过真实 rollout 可达。通过后才实现 3-skill trainer。
+
+### 2026-07-22：Phase 3 Reachability 与 Training v1
+
+> [结果]
+> Reachability gate 通过，但 40,960 条随机轨迹仅 1 条入杯，确认它是极稀有事件。Semantic training v1 只能稳定学到 no-contact 与 contact，第三类失败。
+
+> [方向变化]
+> 下一轮不改变语义或降低 gate，只把 iid epsilon exploration 改成不读取任务状态的 12-step persistent action burst。自建环境通过后新增公开 MiniGrid / MuJoCo bridge，避免最终结论只依赖 toy world。
+
+### 2026-07-22：Phase 3 Training v2 仍失败
+
+> [结果]
+> Persistent burst 提高了进入杯区的频率，但 Semantic DIAYN 仍只有两个稳定 classes。deterministic policy 会经过 cup，却大多继续把 ball 推出，terminal gate 失败。
+
+> [计划]
+> 下一步运行 balanced semantic oracle 上界。它将公平覆盖要求显式化，只用于区分 objective failure 与 control/credit failure，不作为最终算法结果。
+
+### 2026-07-22：Balanced Oracle v3 诊断
+
+> [结果]
+> Deterministic evaluation 三类均超过 0.89，证明控制与 sparse credit 可行；Semantic DIAYN 的失败定位到 objective/local optimum。由于训练尾段 persistent exploration，last-20 gate 仍失败。
+
+> [计划]
+> v3b 只把 epsilon 退火终点降到 0，确认 learned policy 在最后 20 个无探索 batch 中是否稳定；不改变 oracle targets、环境或 gate。
+
+### 2026-07-22：Balanced Oracle v3b 单 Seed 通过
+
+> [结果]
+> 数值、last-20 stability 和 deterministic visual audit 全部通过。三种行为真实对应 ball 不动、ball 推动但杯外、ball 入杯。
+
+> [计划]
+> 下一步运行 5 seeds x 4 methods 的冻结对照。仅在 oracle 至少 4/5 稳定且 baseline 公平报告后，才设计无 class target 的 semantic spread objective。
+
+### 2026-07-22：Oracle Multi-seed 诊断完成
+
+> [结果]
+> Balanced oracle 5/5 通过；Semantic DIAYN 与 Raw DIAYN 都是 0/5。数值和四方法 visual audit 一致，objective gap 在 seed 间稳定。
+
+> [计划]
+> 下一步实现 `MI + semantic occupancy entropy`，不使用 class target，coverage weight 固定为 1.0。先跑 seed 7，失败不做超参 sweep。
+
+### 2026-07-22：Semantic Spread v4 单 Seed 通过
+
+> [结果]
+> `MI - log(K p(c))` 在无 class target 条件下通过数值、last-20 和 visual audit。三个 skills 对应三种真实 object relation。
+
+> [计划]
+> 下一步只补 5 个 semantic-spread seeds，并与已有 20 个 frozen baseline/oracle runs 联合汇总。通过后才把 Phase 3 fixed-layout method gate 标为完成。
+
+### 2026-07-22：Semantic Spread v4 Multi-seed 通过
+
+> [结果]
+> 5/5 seeds、last-20 和五方法 visual audit 全部通过，Phase 3 fixed-layout method gate 完成。Ball geometry coverage 较低的限制已保留。
+
+> [计划]
+> 下一步只加载现有 policies 做 12-layout zero-shot audit。预计 absolute observation 会限制泛化；无论结果如何，之后转入公开 MiniGrid bridge。
+
+### 2026-07-22：Held-out Layout Audit 失败
+
+> [失败记录]
+> 5 个 policies 都仅通过 4/12 layouts。Shape changes 在固定 center 可容忍，cup position shifts 全面失败，画面与 absolute-observation 根因一致。
+
+> [计划]
+> 停止扩张自建环境。下一步在 data Conda env 安装官方 MiniGrid，完成 DoorKey 5x5/8x8 smoke、scripted stage audit 与随机 reachability；训练计划在这些证据之后再写。
+
+### 2026-07-22：MiniGrid DoorKey Phase 4A 通过
+
+> [结果]
+> 官方 5x5/8x8 smoke、seed reproducibility、四 stage scripted audit 与 2560-episode random reachability 全部完成；画面与原生 reward/termination 一致。
+
+> [计划]
+> 下一步安装 CPU PyTorch 与 SB3，先写并测试 fully-observed skill wrapper 和 centralized intrinsic reward。第一项训练只跑 5x5 semantic spread seed 7、250k steps。
+
+### 2026-07-22：MiniGrid 5x5 PPO v1 失败
+
+> [失败记录]
+> 250k Semantic spread 改善 global stage occupancy，但 deterministic skills 只剩 navigation/少量 key，door/goal 为 0。训练期间 rare stages 真实出现，问题是 skill posterior 没有分化。
+
+> [计划]
+> 下一步只替换为 seeded balanced-oracle terminal objective，原样重跑 250k。它只做 control/symmetry diagnosis，不作为最终方法。
+
+### 2026-07-22：MiniGrid 5x5 Balanced Oracle v2 失败
+
+> [结果]
+> 250k 训练中 target-goal skill 多次成功；独立 stochastic evaluation 达到 98.4% native success，证明任务可控。相同 checkpoint 的 deterministic goal success 为 0，其他三个 stages 也没有形成稳定一一分化。
+
+> [失败记录]
+> Stochastic goal controller 不是四技能 deterministic discovery gate。Balanced oracle v2 明确判失败，不能用训练中的 goal 频率代替部署验证。
+
+> [计划]
+> v2b 保持所有条件不变，只把 PPO `ent_coef` 从 0.01 改为 0.0。若仍失败，下一轮直接处理 transition credit/stage stopping，不延长训练或扫描系数。

@@ -75,7 +75,8 @@ def _softmax(logits: np.ndarray) -> np.ndarray:
 def _sample_categorical(probabilities: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     draws = rng.random(len(probabilities))
     cumulative = np.cumsum(probabilities, axis=-1)
-    return np.sum(draws[:, None] > cumulative, axis=-1).astype(np.int64)
+    sampled = np.sum(draws[:, None] > cumulative, axis=-1)
+    return np.minimum(sampled, probabilities.shape[-1] - 1).astype(np.int64)
 
 
 def _grid_ids(positions: np.ndarray, grid_size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

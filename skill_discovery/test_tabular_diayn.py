@@ -4,10 +4,23 @@ import unittest
 
 import numpy as np
 
-from skill_discovery.train_tabular_diayn import TrainConfig, _mutual_information, evaluate, train
+from skill_discovery.train_tabular_diayn import (
+    TrainConfig,
+    _mutual_information,
+    _sample_categorical,
+    evaluate,
+    train,
+)
 
 
 class TabularDiaynTest(unittest.TestCase):
+    def test_categorical_sampler_clips_float_roundoff(self) -> None:
+        probabilities = np.full((16, 9), np.float32(1.0 / 9.0), dtype=np.float32)
+        probabilities[:, -1] = np.nextafter(probabilities[:, -1], np.float32(0.0))
+        samples = _sample_categorical(probabilities, np.random.default_rng(4))
+        self.assertTrue(bool(np.all(samples >= 0)))
+        self.assertTrue(bool(np.all(samples < probabilities.shape[-1])))
+
     def test_mutual_information_extremes(self) -> None:
         skills = np.asarray([0, 0, 1, 1], dtype=np.int64)
         self.assertAlmostEqual(_mutual_information(skills, skills, 2, 2), 1.0)
