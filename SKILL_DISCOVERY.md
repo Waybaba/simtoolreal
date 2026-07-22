@@ -2338,7 +2338,7 @@ Run：`doorkey5_masked_ppo_control_seed7_20260722_122433`
 
 ## Phase 5ZH：Frozen Visual Metric on Policy-state Distribution
 
-状态：`zero-refit迁移协议已冻结，尚未生成数据`
+状态：`zero-refit迁移完成；temporal-delta gate正式失败，不上线cache`
 
 - Phase 5ZG只覆盖scripted solver的四个endpoint；online discovery会在任意agent pose查询metric。上线前先加载Phase 5ZC通过的5x5 oracle Q policies，在全新generation groups `57/67`上运行真实greedy trajectories，不训练policy。
 - 每group运行256个common layouts x四skills。对每个真实step记录该layout reset frame、current frame、furthest oracle stage、skill、step和env seed；每group/每stage用deterministic reservoir各抽128条，最终1024个balanced policy states。
@@ -2346,6 +2346,33 @@ Run：`doorkey5_masked_ppo_control_seed7_20260722_122433`
 - 冻结Phase 5ZG的 `facebook/dinov2-small` 与KMeans centers，不重新fit。主方法固定为 `dinov2_temporal_delta(reset,current)`，cluster→stage mapping沿用5ZG train split完成后的permutation；同时报告其他四个frozen representations作为诊断。
 - State-distribution gate要求主方法overall accuracy `>=0.85`、四stage recalls各 `>=0.75`、groups 57/67各accuracy `>=0.80`、四predicted clusters非空。人工contact sheet检查每stage至少三条不同pose/layout，尤其key carried和door open不能靠agent固定位置伪装。
 - 若通过，下一大计划才实现有限state visual lookup并替换online discovery的oracle stage；若失败，不重新fit centers、不加style augmentation、不改K，正式记录endpoint→policy-state distribution gap。
+
+### Frozen Policy-state Transfer 结果
+
+- Dataset：`doorkey5_policy_state_visual_20260722_124500`
+- Transfer：`doorkey5_policy_state_transfer_20260722_124700`
+
+Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.4k navigation、1.8k key、1.4k door和256 goal states；最终每group/每stage各128条，共1024 samples/2048 frames。DINO与KMeans完全冻结，`fit_or_refit_performed=false`。
+
+| Frozen representation | Accuracy | Nav recall | Key recall | Door recall | Goal recall | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | :---: |
+| Raw current | 0.767 | 0.785 | 0.477 | 0.805 | 1.000 | fail |
+| Raw temporal delta | 0.713 | 0.820 | 0.406 | 0.625 | 1.000 | fail |
+| DINO current | 0.951 | 1.000 | 1.000 | 0.805 | 1.000 | diagnostic only |
+| DINO start+current | 0.951 | 1.000 | 1.000 | 0.805 | 1.000 | diagnostic only |
+| **DINO temporal delta** | **0.899** | **1.000** | **0.898** | **0.699** | **1.000** | **fail** |
+
+- 主方法按预注册固定为temporal delta。其group 57/67 accuracy为0.891/0.908，但door recall为0.648/0.750；overall door 0.699低于0.75 gate，所以不能事后改用current 0.951宣布本阶段成功。
+- Temporal-delta confusion中54/256 door states被判为key、23/256被判为goal；13/256 key states各自被判navigation/door。四predicted clusters都非空，失败不是cluster collapse。
+- 人工检查12条door errors：door全部真实open且帧正常；靠近green goal的door-open states常被判goal，较早door poses被判key。Endpoint delta centers混入了solver固定agent motion，不能覆盖同一door语义内的持续pose分布。
+- Policy-state contact sheet每stage三种不同pose/layout，key carried、door open和goal均真实。第一次GPU命令只在import时因`skill-vision`缺MiniGrid退出、未产生分数；安装同版本 `minigrid 3.1.0`后原命令重跑，模型/centers/gate未改。
+
+![DoorKey policy-state visual audit](outputs/skill_discovery/minigrid_doorkey_visual/doorkey5_policy_state_visual_20260722_124500/policy_state_manual_audit.png)
+
+![DoorKey door misclassification audit](outputs/skill_discovery/minigrid_doorkey_visual/doorkey5_policy_state_transfer_20260722_124700/door_misclassification_audit.png)
+
+> [失败记录]
+> Scripted endpoints上1.0的DINO temporal-delta不能zero-shot覆盖真实policy-state distribution，主因是door-open class内部agent pose/motion变化。按预注册停止online visual cache，不重新fit centers、不换K、不在groups 57/67上改选择规则。DINO current的0.951只作为新假设，必须在全新groups上另行预注册验证。
 
 ## Phase 6：迁移到 Hammer
 
