@@ -2298,6 +2298,18 @@ Run：`doorkey5_masked_ppo_control_seed7_20260722_122433`
 > [失败记录]
 > 5x5 neural control upper bound未通过，因此取消8x8 masked-PPO transfer，不调entropy、预算、reward或network。DoorKey当前可靠结论仍是5x5 tabular online discovery 3/3；其扩展瓶颈是可泛化control与稀疏credit，而不是semantic assignment本身。
 
+## Phase 5ZG：DoorKey Foundation-visual Semantic Metric
+
+状态：`离线metric协议已冻结，尚未生成数据`
+
+- 停止扩展control后回到核心假设：5x5 tabular discovery的stage metric目前是oracle，下一步先检验冻结foundation vision embedding能否在官方DoorKey RGB中无标签区分navigation/key/door/goal四个语义阶段。
+- 使用official scripted solver只生成balanced offline audit data，不进入policy training。Train generation groups为seeds `7/17/27`，audit groups为`37/47`；每group 128个独立layout seeds，每个layout保存reset、key acquired、door opened、native goal四张 `160x160` RGB，共640 trajectories/2560 frames。
+- Split按generation group完全隔离，不按frame随机切分。保存env seed、stage、actions、native termination和四阶段contact sheet；先人工确认key消失并被携带、door真实open、agent进入goal，图像错误则不调用GPU。
+- 冻结 `facebook/dinov2-small`，一次性缓存所有frame CLS embeddings。比较current-frame、start+current和self-reference temporal-delta三种trajectory representations；同时保留downsampled raw-current/raw-delta作为负载相近baseline。
+- 每种representation只在train split无标签fit KMeans `K=4`、seed 7、n-init 32；train stage labels只在fit完成后求cluster permutation，audit labels只用于最终accuracy/recall/NMI，不调整centers或选择样本。
+- Foundation-visual gate要求至少一个DINO representation在audit上aligned accuracy `>=0.85`、四stage recalls各 `>=0.75`、NMI `>=0.65`、train/audit四clusters均非空；contact sheet需人工通过。不要求DINO击败raw pixels，因为MiniGrid renderer的颜色规则本身可能让raw baseline很强。
+- 若通过，下一大计划才设计有限state visual-embedding cache，把冻结cluster identity替换5x5 online discovery的oracle stage；若失败，先记录是哪个stage混淆，不调K、encoder、prompt或style augmentation。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
