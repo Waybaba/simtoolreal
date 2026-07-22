@@ -2176,7 +2176,7 @@ Run：`doorkey5_tabular_balanced_control_actionmask_optionterm_seed7_20260722_11
 
 ## Phase 5ZD：DoorKey Online Discovery + Frozen Option Policy
 
-状态：`seed 7完整通过；seeds 17/29待复现`
+状态：`seeds 7/17/29完整复现；3/3通过`
 
 - 研究问题只改一个边界：Phase 5ZC的固定oracle reward rows由online semantic-spread bootstrap替代。环境仍为官方 `MiniGrid-DoorKey-5x5-v0`，compact state、五个official actions、state-changing mask、64-step horizon、tabular Q update和common-random layouts全部不变。
 - 总预算仍为20k episodes：前5k bootstrap按四skills轮转，使用furthest semantic-stage occupancy的decayed DIAYN posterior加global coverage reward；`pseudocount=2`、`semantic_decay=0.9995`、coverage weight=1。Bootstrap不使用target、option termination、native reward、scripted solver、macro或imitation。
@@ -2212,6 +2212,22 @@ Bootstrap在5k后得到independent top stages `[2,1,0,3]`，即skill顺序为doo
 
 > [里程碑]
 > DoorKey第一次在非identity、非oracle assignment下通过完整发现到控制链：online spread自行分出door/key/navigation/goal，冻结后的transition-aware rows和option contract在所有后期checkpoints及independent final同时交付正确最终状态。Seed 7只证明可行性，不证明robustness；按预注册继续seeds 17/29，不回头调整超参数。
+
+### 三seed Robustness 结果
+
+| Seed | Independent tops | Balanced assignment | Edge counts 0→1 / 1→2 / 2→3 | Last-3 | Final furthest / state / goal |
+| ---: | --- | --- | --- | :---: | --- |
+| 7 | 2 / 1 / 0 / 3 | door / key / navigation / goal | 3943 / 3308 / 2024 | 3/3 | 1.000 / 1.000 / 1.000 |
+| 17 | 0 / 1 / 3 / 2 | navigation / key / goal / door | 4315 / 3318 / 1941 | 3/3 | 1.000 / 1.000 / 1.000 |
+| 29 | 3 / 2 / 3 / 3 | navigation / door / key / goal | 3761 / 2948 / 1367 | 3/3 | 1.000 / 1.000 / 1.000 |
+
+- Seeds 7/17的independent rows已经形成permutation；seed 29出现三个rows同时以goal为top的真实collision。24-permutation global assignment在seed 29修复为navigation/door/key/goal，随后四项双重control gate仍全部1.000，验证balanced assignment不是闲置机制。
+- Seed 17在3k checkpoint的最小assigned rate为0.785，正式fail；6k为0.951，9k及13k/14k/15k均1.000。文档保留早期失败，最终robustness只按预注册last-3与independent final判断。
+- 三seed的bootstrap transition edges全部远超structural threshold，三份final contact sheets均显示key真实carried、door真实open并在option return时保持、goal由native termination完成。跨seed没有固定skill编号或固定row顺序。
+- 结论边界：这是layout-aware compact symbolic state、semantic stage metric、state-changing action mask和显式option termination下的离散public benchmark。它验证discovery objective、balanced assignment和compositional control链，不等价于视觉representation discovery，也不直接外推到连续物理或Hammer。
+
+> [里程碑]
+> DoorKey 5x5 online discovery方法达到3/3 training seeds、9/9 last-three checkpoints和三份independent final全通过；其中包含一份真实bootstrap row collision及其无人工target mapping的修复。停止5x5调参。下一步只增加公开环境规模，先重新验证8x8 control upper bound，再决定是否迁移同一discovery协议；仍不进入IsaacLab。
 
 ## Phase 6：迁移到 Hammer
 
