@@ -1961,7 +1961,7 @@ Summary：`gotoobject_blockwise_spread_replay_multiseed_7_17_29_20260722_103608.
 
 ## Phase 5W：Balanced Assignment + Transition-predecessor Audit
 
-状态：`artifact-only结构审计计划已冻结，尚未运行`
+状态：`artifact-only结构审计完成；3/3 structural gate通过`
 
 - 输入固定为Phase 5V seeds `7/17/29` 的bootstrap raw matrices与压缩transition buffers；不运行environment、Q update或policy evaluation。
 - 对每个3x3 raw matrix穷举6个row-to-stage permutations，选择总raw reward最大的one-to-one assignment；精确平局按lexicographic permutation确定。该步骤只使用discovered stage indices，不读取stage语义名称。
@@ -1970,6 +1970,24 @@ Summary：`gotoobject_blockwise_spread_replay_multiseed_7_17_29_20260722_103608.
 - 该变换有两个明确目的：全局assignment消除seed 29独立argmax collision；predecessor floor消除seed 17 carried row对必经adjacent的 `-16.631` 惩罚。它不继承raw reward magnitude，raw matrix只负责全局匹配。
 - Structural gate要求3/3 seeds得到finite unique permutation；每个target至少有一个受支持nonself predecessor；每行target唯一为1、predecessors均为0。额外核对seed 7 assignment不变、seed 17 carried predecessor不再为负、seed 29 collision被解析。
 - 输出保存balanced assignment、6个permutation scores、transition count matrix、supported predecessors与transformed reward matrix。即使gate通过也不算训练成功；只决定是否值得进行下一轮3-seed integrated replication。
+
+### Structural audit 结果
+
+Artifact：`gotoobject_balanced_transition_audit_7_17_29_20260722.json`
+
+| Seed | Independent tops | Balanced assignment | Collision resolved | Structural gate |
+| ---: | --- | --- | :---: | :---: |
+| 7 | far / carried / adjacent | far / carried / adjacent | n/a | pass |
+| 17 | adjacent / far / carried | adjacent / far / carried | n/a | pass |
+| 29 | carried / carried / adjacent | far / carried / adjacent | yes | pass |
+
+- Seed 29的maximum-weight assignment总score为1.232，高于次优1.008，并给出完整permutation；seed 7/17的balanced assignment与原独立tops一致，所以规则没有不必要地改写已无collision的rows。
+- 三个buffers的nonself transition counts高度一致：约4.0k--4.4k far→adjacent、2.7k--2.9k adjacent→far、6.8k--6.9k adjacent→carried、5.3k carried→adjacent。三个targets都有远高于25/1%门槛的direct predecessors。
+- 按target stage观察，三个seeds最终得到同一组rows：far=`[1,0,-1]`、adjacent=`[0,1,0]`、carried=`[-1,0,1]`；实际matrix只因skill-row assignment而重排。
+- Seed 17 carried predecessor adjacent从 `-16.631` 变为0；seed 29得到唯一target rows。3/3 structural gate通过，且全过程没有environment或Q update。
+
+> [里程碑]
+> 两个multi-seed失败结构都能由同一条无语义名称的规则解决：discovered clusters做global balanced matching，observed transition graph保护通往target的直接前驱。该audit没有证明policy会通过；下一步用完全相同的training seeds `7/17/29` 做integrated replication，禁止换seed或增加20k预算。
 
 ## Phase 6：迁移到 Hammer
 
