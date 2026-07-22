@@ -3,9 +3,9 @@
 > [当前状态]
 > 分支：`codex/skill-discovery`
 >
-> 当前阶段：Phase 1，`Semantic Shape World / Point-Cup` 第一轮 metric sanity check 已跑通，但尚未通过完整 gate。
+> 当前阶段：Phase 2 已完成。5-seed 数值 gate 和 deterministic policy rollout visual audit 均通过，准备进入 Phase 3。
 >
-> 当前动作：把第一轮对照扩展到 5 个 seed，并把过于简单的 kNN audit 改成带强 nuisance variation 的检验；此阶段不训练 Hammer，也不调用 VLM。
+> 当前动作：Pusher-Cup 环境单元测试和 scripted visual audit 已通过；下一步运行 offline reachability audit。仍不训练 Hammer、不调用 VLM，也不使用物理引擎。
 
 ## 一眼看完整流程
 
@@ -73,7 +73,7 @@ Hammer 同时包含高维机械臂控制、接触动力学、长时间 PPO 训�
 
 ## Phase 1：Semantic Shape World / Point-Cup 离线 Metric Probe
 
-状态：`进行中，第一轮单 seed 对照完成`
+状态：`完成`
 
 ### 环境形式
 
@@ -189,18 +189,59 @@ Run：`point_cup_probe_20260722_022926`
 > [失败记录]
 > 当前 balanced kNN accuracy 对四种 metric 都是 1.0，因为脚本生成的四类轨迹在运动模式上太容易区分。这个指标只能作为数据管线 sanity check，不能作为 metric 优劣证据。下一轮会加入相同语义下的大位置/形状变化，以及不同语义下很小的像素和几何变化。
 
+### 五个 Seed 与 Nuisance Audit
+
+Aggregate run：`point_cup_multiseed_20260722_0234`
+
+Seeds：`7, 17, 27, 37, 47`
+
+Nuisance audit 使用 12 个 held-out layouts。Positive pair 是同一语义和同一 canonical behavior 在不同 cup position / aspect ratio 下的轨迹；negative pair 是同一 layout 中几何上接近但语义不同的轨迹。
+
+| Metric | Rare recall | 语义熵 | 几何覆盖 | Cross-layout kNN | Nuisance triplet |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Raw L2 | 0.267 ± 0.133 | 0.213 ± 0.119 | 0.615 ± 0.025 | 0.326 ± 0.037 | 0.030 ± 0.028 |
+| Random feature | 0.333 ± 0.000 | 0.281 ± 0.100 | 0.602 ± 0.033 | 0.326 ± 0.044 | 0.025 ± 0.022 |
+| Object transition | 0.333 ± 0.211 | 0.306 ± 0.198 | 0.552 ± 0.012 | 0.583 ± 0.044 | 0.633 ± 0.122 |
+| Semantic oracle | **1.000 ± 0.000** | **0.829 ± 0.032** | 0.597 ± 0.021 | **1.000 ± 0.000** | **1.000 ± 0.000** |
+
+每个 seed 都通过预先写下的 numeric gate。Oracle 保留的几何覆盖是 Raw 的约 97%，高于 70% gate。
+
+30 条分层抽样轨迹同时覆盖 fixed 与 nuisance layouts。联系表每行依次为 start / middle / final；左侧颜色为灰色 outside、蓝色 inside、绿色 entering、橙色 leaving。人工查看和 manifest 均为 30/30 匹配。
+
+![30-trajectory manual audit](outputs/skill_discovery/point_cup/point_cup_multiseed_20260722_0234/seed_7/manual_audit_30.png)
+
+完整汇总：`outputs/skill_discovery/point_cup/point_cup_multiseed_20260722_0234/summary.json`
+
+> [结果]
+> Phase 1 gate 通过。这个结论只证明 oracle semantic metric 的离线排序符合预期；它还没有证明该 metric 能通过 policy optimization 发现 rare mode。
+
 ## Phase 2：Point-Cup 快速 Skill Discovery
 
-状态：`等待 Phase 1`
+状态：`完成`
 
 这一阶段才开始训练，但环境和网络都很小，目标运行时间是分钟级而不是小时或天。
+
+### 第一轮训练设计
+
+第一轮只使用两个 skills，因为当前最小语义关系是 binary `inside/outside`。若先放四个 skills，会强迫方法在并不存在的语义类中制造差异。
+
+采用小型 tabular DIAYN-style mutual-information objective：
+
+- Policy：`skill x discretized (x, y) -> 9 discrete actions` 的 logits table。
+- Optimizer：batched REINFORCE，带 per-skill moving baseline 和固定 epsilon exploration。
+- Reset：球从杯外同一小区域开始，避免 reset distribution 替策略制造语义差异。
+- Raw discriminator input：episode 终点的二维 grid cell。
+- Semantic discriminator input：episode 终点的 `inside/outside` relation。
+- Intrinsic reward：`log q(z | feature) - log p(z)`。
+- 唯一变化变量：discriminator 使用哪一种 feature。
+
+这个实验不是最终算法，而是最小因果检验：当训练算法完全相同时，替换 representation 是否会把两个 skills 从“两个几何终点”改成“一个杯内、一个杯外”。
 
 最小对照：
 
 1. Random policy。
-2. Raw-state kNN entropy reward。
-3. Semantic-oracle kNN entropy reward。
-4. 若需要，再加 DIAYN-style discriminator baseline。
+2. Raw endpoint DIAYN。
+3. Semantic relation DIAYN。
 
 所有方法使用相同策略网络、步数、seed 和优化器。主要曲线：
 
@@ -210,16 +251,43 @@ Run：`point_cup_probe_20260722_022926`
 - `xy_coverage`
 - `skill_semantic_mutual_information`
 
+同时记录 `endpoint_grid_mutual_information`，避免只展示 semantic 方法占优的指标。
+
 ### Phase 2 Gate
 
 - Semantic reward 在多个 seed 上提高 inside/outside 的均衡覆盖。
 - 产生的差异来自策略行为，而不是 reset distribution。
 - 不同 latent skill 对应稳定、可复现的轨迹模式。
 - Raw baseline 仍作为几何覆盖的参照，不隐藏其可能更强的指标。
+- 首轮预注册的可读 gate：Semantic 方法中一个 skill 的 final inside rate 至少 0.8，另一个至多 0.2；5 个 seed 中至少 4 个满足。
+- 若 Semantic 方法只偶然进入一次杯内但无法稳定复现，则判定失败。
+
+### Phase 2 结果
+
+Aggregate run：`tabular_diayn_multiseed_20260722_0243`
+
+Seeds：`7, 17, 27, 37, 47`。每种方法每个 seed 都训练 400 iterations，并使用 1024 个无探索 evaluation episodes / skill。表中为 5-seed mean；`stable pass` 同时要求 evaluation gate 和最后 20 个训练 iterations 的稳定性 gate 通过。
+
+| Method | High inside | Low inside | Semantic MI (bits) | Endpoint-grid MI (bits) | XY coverage | Stable pass |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Random policy | 0.0648 | 0.0609 | 0.00008 | 0.0177 | 0.4397 | 0 / 5 |
+| Raw endpoint DIAYN | 0.0988 | **0.0000** | 0.0559 | **0.9950** | **0.4653** | 0 / 5 |
+| Semantic relation DIAYN | **0.9846** | 0.0016 | **0.9351** | 0.9551 | 0.3866 | **5 / 5** |
+
+这个结果没有把 raw baseline 的优势藏起来：它在 endpoint-grid MI 和 XY coverage 上最好，说明它确实学会了把两个 skills 放到不同几何终点。可是这些终点几乎都在杯外；它没有稳定发现几何体积很小的 `inside` relation。Semantic 方法牺牲了一部分 XY coverage，但 5 个 seed 都稳定地产生一个入杯 skill 和一个杯外 skill，同时保留了 0.955 bits 的 endpoint-grid MI。
+
+Visual audit 重新加载 seed 7 的保存策略，关闭 epsilon exploration，每个 skill rollout 64 次，并展示其中 3 次的 5 个时间点。左侧第一条颜色依次表示 Random（灰）、Raw（蓝）、Semantic（绿）；第二条颜色表示 skill 0（橙）和 skill 1（紫）。抽样入杯率分别为 Random `0.0625/0.0313`、Raw `0.0000/0.0313`、Semantic `1.0000/0.0000`。人工查看确认 semantic skill 0 的展示轨迹确实把红球移入蓝色杯区，并非指标误判。
+
+![Point-Cup deterministic policy rollout audit](outputs/skill_discovery/point_cup_training/tabular_diayn_multiseed_20260722_0243/policy_rollout_audit.png)
+
+完整汇总：`outputs/skill_discovery/point_cup_training/tabular_diayn_multiseed_20260722_0243/summary.json`
+
+> [结果]
+> Phase 2 gate 通过。这只支持“在固定布局的直接控制 toy environment 中，semantic representation 改变了 discovery 的行为类别”这一有限结论；它还没有证明这些语义状态需要 object interaction，或能迁移到图像、VLM、Hammer。
 
 ## Phase 3：Pusher-Cup 规则接触控制
 
-状态：`等待 Phase 2`
+状态：`环境与 visual audit 通过，进行 reachability audit`
 
 将“直接控制球”改成“控制一个二维 pusher，只有图形重叠或接触时球才按规则移动”。它仍然不是物理模拟，只加入最小 manipulation constraint：
 
@@ -230,6 +298,54 @@ Run：`point_cup_probe_20260722_022926`
 - 接触转移：使用确定性几何规则，例如接触时把 pusher 位移的一部分传给 ball，不计算质量、摩擦、碰撞求解或软体形变。
 
 这一步检验 semantic metric 是否与 controllability/object interaction 对齐。若 oracle reward 仍只产生无效动作，就需要在 metric 中加入 object transition 或 reachability constraint。
+
+### Phase 3 首轮实现计划
+
+这一步仍保持二维图形环境，不退化成一维轨道，也不加入 Isaac Lab：
+
+1. `Environment correctness`：pusher 在二维平面直接移动；仅当 pusher 与 ball 图形接触时，当前 pusher displacement 才传给 ball。先用 scripted trajectories 验证未接触、接触、持续推动、球入杯和边界裁剪。
+2. `Render audit`：固定渲染 pusher、ball、cup 与 contact 状态。人工检查至少一条成功 push-in 轨迹和一条 pusher 自己经过 cup、ball 未移动的反例。
+3. `Offline reachability audit`：随机策略和 scripted policies 共同生成数据，确认三个语义类都真实可达，而不是由标签器伪造。
+4. `Skill discovery`：扩展现有 tabular DIAYN trainer 到 3 skills。Policy 对所有方法看到相同的离散 raw graph state `(pusher_x, pusher_y, ball_x, ball_y)`；只改变 discriminator feature。
+5. `Multi-seed comparison`：一个 seed 做信号检查，通过后运行 5 seeds 的 Random / Raw / Semantic 对照，并保存曲线、策略、数值汇总和 deterministic rollout contact sheet。
+
+首轮 semantic trajectory class 固定为：
+
+- `no_contact`：整条轨迹没有接触，ball 没有被操作。
+- `contact_without_inside`：至少接触并移动 ball，但终点没有入杯。
+- `ball_inside`：ball 终点在杯内；pusher 自己的位置不能代替 ball 状态。
+
+Raw discriminator 使用 terminal `(pusher_x, pusher_y, ball_x, ball_y)` grid cell；Semantic discriminator只使用上面的三类轨迹事件。两者的 policy、reset、动作、训练步数、optimizer 和随机种子保持一致。
+
+### Phase 3 Gate
+
+- scripted environment tests 与人工 render audit 均通过。
+- Semantic 方法的三个 skills 可以按 permutation 分别匹配三个语义类，每个匹配类的频率暂定至少 0.70。
+- `ball_inside` skill 的 final inside rate 至少 0.70，并且 ball displacement 明显大于零，排除只移动 pusher 的假成功。
+- 最后 20 个 iterations 中，至少 80% 满足 specialization gate。
+- 5 个 seeds 中至少 4 个通过；Random 和 Raw 的几何覆盖、terminal MI 仍完整报告。
+- 若随机探索完全采不到 `ball_inside`，先记录失败并调整 exploration/reset curriculum，不修改标签或在结果出来后放宽 gate。
+
+首轮 cup 与对象尺寸固定。环境 API 继续支持 cup position / axes、ball radius、pusher radius 和 transfer ratio 的变化；只有固定布局 gate 通过后，才把这些变化作为 held-out nuisance/generalization audit。
+
+这批实验仍是纯 NumPy CPU workload，单次运行预计秒到分钟级；此时分配 GPU 只会增加启动和数据搬运开销。等 Phase 4 引入 neural visual encoder 或 Phase 5 回到 Isaac Lab 时，再按可用 GPU 并行分 seed。
+
+### Environment Correctness 结果
+
+Run：`environment_audit_20260722_025259`
+
+- 11 项 Point-Cup、trainer 和 Pusher-Cup 单元测试全部通过。
+- scripted `no_contact` 的 ball path length 为 `0.000`。
+- scripted `contact_without_inside` 的 ball path length 为 `0.110`，终点仍在杯外。
+- scripted `ball_inside` 的 ball path length 为 `0.495`，终点真实位于杯内。
+- false-positive 反例中 pusher 终点位于杯内，但 ball path length 为 `0.000`，标签仍为 `no_contact`。
+
+联系表每行是一个脚本、每列依次为 step `0/4/8/12/20/25/32`。橙色圆是 pusher，接触瞬间变绿；红色圆是 ball，蓝色椭圆是 cup。人工查看与自动 manifest 的 5 项 checks 全部一致。
+
+![Pusher-Cup scripted environment audit](outputs/skill_discovery/pusher_cup/environment_audit_20260722_025259/scripted_trajectory_audit.png)
+
+> [结果]
+> 最小接触规则和 ball-based success definition 通过。这个结果只证明环境可表达三个事件，不证明无监督探索能够发现它们。
 
 ## Phase 4：图像与 VLM Metric
 
@@ -315,6 +431,15 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 > [问题 Q-003 | 非阻塞]
 > 环境支持形状变化，但第一轮使用固定杯区；通过 metric sanity check 后，再把 cup size、aspect ratio、position 和 opening direction 作为 held-out 变化。默认按这个顺序继续。
 
+> [问题 Q-004 | 非阻塞]
+> Phase 2 首轮使用两个 skills 对应当前 binary semantic relation，不人为增加四类。通过后再在 Pusher-Cup 中扩展 approach/contact/push/inside 等轨迹语义。默认按这个顺序继续。
+
+> [问题 Q-005 | 非阻塞]
+> Phase 3 首轮使用三个 skills，对应 `no_contact / contact_without_inside / ball_inside`。这比立即增加 approach、leave-cup 等更多类别更容易判断接触约束是否真正有效。默认按这个定义继续。
+
+> [问题 Q-006 | 非阻塞]
+> Pusher-Cup 保持真正的二维控制，但首轮固定对象布局和尺寸；形状/位置变化只作为 gate 通过后的 held-out audit。默认按这个顺序继续。
+
 ## 决策记录
 
 ### D-001：先验证 metric，再训练大环境
@@ -337,6 +462,34 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - 原因：第一阶段只需要检验 semantic metric；物理控制和昂贵渲染会增加不必要的变量。
 - 形变策略：接口支持变形，第一轮固定形状，第二轮才把形变作为泛化测试。
 
+### D-004：Phase 1 Gate 通过
+
+- 日期：2026-07-22
+- 证据：5 个 seed 全部通过 numeric gate，30 条轨迹人工与自动标签检查通过。
+- 限定结论：oracle metric 的离线排序正确；policy optimization 尚未验证。
+
+### D-005：Phase 2 先使用两个 Skills
+
+- 日期：2026-07-22
+- 决定：第一轮只比较 binary inside/outside relation，不人为构造更多语义类。
+- 方法：同一 tabular DIAYN trainer，只替换 discriminator feature。
+- Gate：5 个 seed 中至少 4 个形成稳定 inside/outside specialization。
+
+### D-006：Phase 2 Gate 通过
+
+- 日期：2026-07-22
+- 证据：Semantic 方法 5/5 seeds 通过，mean high/low inside rate 为 `0.9846/0.0016`；Raw 为 `0.0988/0.0000`。
+- 公平性检查：Raw 的 endpoint-grid MI 和 XY coverage 高于 Semantic，已同时报告。
+- Visual audit：重新加载保存策略并关闭探索后，64-rollout 抽样和展示轨迹均确认真正入杯。
+- 限定结论：只在固定布局、直接控制 Point-Cup 中成立；object interaction 尚未验证。
+
+### D-007：Phase 3 使用规则式二维 Pusher-Cup
+
+- 日期：2026-07-22
+- 决定：加入二维 pusher 与确定性接触传递，但不加入物理引擎或软体形变。
+- 原因：它只增加“必须通过另一个对象进行控制”这一项变量，仍能快速定位失败原因。
+- Gate：3 个 semantic classes、5 seeds、策略轨迹人工审计；固定布局通过后才测形状变化。
+
 ## 实验日志
 
 ### 2026-07-22：项目启动
@@ -352,3 +505,33 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 > [计划]
 > 下一步实现 Point-Cup 环境、数据生成器和最小 raw-vs-oracle metric 对照。完成后把真实 run id、曲线和结论写回本文件。
+
+### 2026-07-22：Phase 1 完成
+
+> [结果]
+> 五个 seed 中 oracle rare recall、cross-layout kNN 和 nuisance triplet 均为 1.0；Raw L2 分别为 0.267、0.326 和 0.030 的均值。Oracle 几何覆盖保留约 97%。
+
+> [结果]
+> 30 条 fixed/nuisance 轨迹的 start/middle/final 联系表已经检查，语义转移和 manifest 30/30 一致。
+
+> [计划]
+> 下一步实现两技能 tabular DIAYN。先跑一个 seed 验证 learning signal 与曲线，再运行 5-seed raw-vs-semantic 对照。
+
+### 2026-07-22：Phase 2 完成
+
+> [结果]
+> 15 个训练 runs 完成。Semantic 在 5/5 seeds 形成稳定 inside/outside specialization；Raw 在 terminal geometry 上更可区分，但没有稳定发现杯内 rare mode。
+
+> [结果]
+> deterministic rollout contact sheet 已人工检查。指标中的高 success 对应红球真正进入杯区，不是 reset、探索噪声或错误 success definition。
+
+> [计划]
+> 下一步严格按 Phase 3 预注册顺序推进：先实现和测试二维规则接触环境，再做 scripted visual/reachability audit；只有环境证据通过后才开始 3-skill training。
+
+### 2026-07-22：Phase 3 环境审计
+
+> [结果]
+> Pusher-Cup contact-transfer 单元测试与四条 scripted 轨迹的 visual audit 通过。特别保留了“pusher 入杯、ball 未移动”的反例，并被正确判为失败。
+
+> [计划]
+> 下一步量化自然随机探索中的三类频率，并用独立 scripted audit 确认每一类都通过真实 rollout 可达。通过后才实现 3-skill trainer。

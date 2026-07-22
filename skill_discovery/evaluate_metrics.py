@@ -109,6 +109,45 @@ def _geometric_coverage(states: np.ndarray, bins: int = 16) -> float:
     return float(len(occupied) / (bins * bins))
 
 
+def _cross_layout_knn_accuracy(
+    features: np.ndarray,
+    classes: np.ndarray,
+    layout_ids: np.ndarray,
+) -> float:
+    distances = _pairwise_squared(features)
+    distances[layout_ids[:, None] == layout_ids[None, :]] = np.inf
+    predictions = classes[np.argmin(distances, axis=1)]
+    recalls = [np.mean(predictions[classes == class_id] == class_id) for class_id in np.unique(classes)]
+    return float(np.mean(recalls))
+
+
+def _matched_nuisance_triplets(
+    features: np.ndarray,
+    classes: np.ndarray,
+    layout_ids: np.ndarray,
+    instance_ids: np.ndarray,
+) -> tuple[float, float]:
+    lookup = {
+        (int(layout_id), int(class_id), int(instance_id)): index
+        for index, (layout_id, class_id, instance_id) in enumerate(zip(layout_ids, classes, instance_ids))
+    }
+    layout_count = int(layout_ids.max()) + 1
+    class_count = int(classes.max()) + 1
+    correct: list[bool] = []
+    margins: list[float] = []
+    for anchor, (layout_id, class_id, instance_id) in enumerate(zip(layout_ids, classes, instance_ids)):
+        positive = lookup[((int(layout_id) + 1) % layout_count, int(class_id), int(instance_id))]
+        positive_distance = float(np.linalg.norm(features[anchor] - features[positive]))
+        for negative_class in range(class_count):
+            if negative_class == int(class_id):
+                continue
+            negative = lookup[(int(layout_id), negative_class, int(instance_id))]
+            negative_distance = float(np.linalg.norm(features[anchor] - features[negative]))
+            correct.append(positive_distance < negative_distance)
+            margins.append(negative_distance - positive_distance)
+    return float(np.mean(correct)), float(np.mean(margins))
+
+
 def _write_svg(path: Path, results: dict[str, dict[str, float]]) -> None:
     width, height = 760, 360
     names = list(results)
@@ -150,17 +189,28 @@ def main() -> None:
     audit_classes = payload["audit_episode_class"].astype(np.int64)
     discovery_states = payload["discovery_states"]
     discovery_classes = payload["discovery_episode_class"].astype(np.int64)
+    nuisance_states = payload["nuisance_states"]
+    nuisance_classes = payload["nuisance_episode_class"].astype(np.int64)
+    nuisance_layout_ids = payload["nuisance_layout_id"].astype(np.int64)
+    nuisance_instance_ids = payload["nuisance_instance_id"].astype(np.int64)
     class_names = [str(value) for value in payload["class_names"]]
     class_count = len(class_names)
 
     audit_features = _feature_sets(audit_states, audit_classes, args.seed)
     discovery_features = _feature_sets(discovery_states, discovery_classes, args.seed)
+    nuisance_features = _feature_sets(nuisance_states, nuisance_classes, args.seed)
     results: dict[str, dict[str, float | int | list[int]]] = {}
 
     for name, features in audit_features.items():
         selected = _farthest_point_sample(discovery_features[name], args.representatives)
         selected_classes = discovery_classes[selected]
         covered = set(int(value) for value in selected_classes)
+        nuisance_triplet_accuracy, nuisance_margin = _matched_nuisance_triplets(
+            nuisance_features[name],
+            nuisance_classes,
+            nuisance_layout_ids,
+            nuisance_instance_ids,
+        )
         results[name] = {
             "balanced_knn_accuracy": _balanced_nearest_neighbor_accuracy(features, audit_classes),
             "inter_intra_distance_ratio": _distance_ratio(features, audit_classes),
@@ -169,6 +219,13 @@ def main() -> None:
             "representative_semantic_entropy": _normalized_entropy(selected_classes, class_count),
             "representative_geometric_coverage": _geometric_coverage(discovery_states[selected]),
             "representative_class_counts": np.bincount(selected_classes, minlength=class_count).tolist(),
+            "cross_layout_knn_accuracy": _cross_layout_knn_accuracy(
+                nuisance_features[name],
+                nuisance_classes,
+                nuisance_layout_ids,
+            ),
+            "nuisance_triplet_accuracy": nuisance_triplet_accuracy,
+            "nuisance_triplet_margin": nuisance_margin,
         }
 
     output = {
@@ -177,6 +234,9 @@ def main() -> None:
         "class_names": class_names,
         "discovery_class_counts": np.bincount(discovery_classes, minlength=class_count).tolist(),
         "audit_observed_matches_intent": float(np.mean(payload["audit_observed_class"] == audit_classes)),
+        "nuisance_observed_matches_intent": float(
+            np.mean(payload["nuisance_observed_class"] == nuisance_classes)
+        ),
         "metrics": results,
     }
     output_path = args.dataset.parent / "metrics.json"

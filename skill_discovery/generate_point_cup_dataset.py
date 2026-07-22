@@ -127,6 +127,85 @@ def _record_balanced(
     )
 
 
+def _record_nuisance(
+    config: ShapeWorldConfig,
+    steps: int,
+    layout_count: int,
+    per_class: int,
+    seed: int,
+) -> dict[str, np.ndarray]:
+    """Generate controlled layout changes with matched semantic behaviors."""
+
+    class_count = len(AUDIT_CLASSES)
+    num_envs = layout_count * class_count * per_class
+    nuisance_config = ShapeWorldConfig(**{**asdict(config), "num_envs": num_envs})
+    env = PointCupEnv(nuisance_config)
+    rng = np.random.default_rng(seed)
+
+    layout_ids = np.repeat(np.arange(layout_count, dtype=np.int64), class_count * per_class)
+    class_ids = np.tile(np.repeat(np.arange(class_count, dtype=np.int64), per_class), layout_count)
+    instance_ids = np.tile(np.arange(per_class, dtype=np.int64), layout_count * class_count)
+
+    layout_centers = rng.uniform(-0.38, 0.38, size=(layout_count, 2)).astype(np.float32)
+    layout_axes = rng.uniform(0.085, 0.19, size=(layout_count, 2)).astype(np.float32)
+    centers = layout_centers[layout_ids]
+    axes = layout_axes[layout_ids]
+    env.set_layout(centers=centers, axes=axes)
+
+    base_angles = rng.uniform(-np.pi, np.pi, size=per_class)
+    directions = np.stack(
+        [np.cos(base_angles[instance_ids]), np.sin(base_angles[instance_ids])],
+        axis=-1,
+    ).astype(np.float32)
+
+    def relative_position(radius: float) -> np.ndarray:
+        return centers + axes * directions * radius
+
+    starts = np.empty((num_envs, 2), dtype=np.float32)
+    targets = np.empty((num_envs, 2), dtype=np.float32)
+    outside = class_ids == 0
+    inside = class_ids == 1
+    entering = class_ids == 2
+    leaving = class_ids == 3
+    starts[outside] = relative_position(1.22)[outside]
+    targets[outside] = starts[outside]
+    starts[inside] = relative_position(0.58)[inside]
+    targets[inside] = starts[inside]
+    starts[entering] = relative_position(1.22)[entering]
+    targets[entering] = relative_position(0.58)[entering]
+    starts[leaving] = relative_position(0.58)[leaving]
+    targets[leaving] = relative_position(1.22)[leaving]
+
+    observation = env.reset(positions=starts)
+    states = np.empty((num_envs, steps + 1, 2), dtype=np.float32)
+    labels = np.empty((num_envs, steps + 1), dtype=np.int8)
+    actions = np.empty((num_envs, steps, 2), dtype=np.float32)
+    states[:, 0] = observation["state"]
+    labels[:, 0] = observation["semantic_label"]
+
+    for step in range(steps):
+        delta = targets - env.positions
+        action = np.clip(delta / config.action_scale, -1.0, 1.0).astype(np.float32)
+        observation, semantic_label, _ = env.step(action)
+        actions[:, step] = action
+        states[:, step + 1] = observation["state"]
+        labels[:, step + 1] = semantic_label
+
+    return {
+        "states": states,
+        "actions": actions,
+        "semantic_labels": labels,
+        "episode_class": class_ids,
+        "observed_class": _trajectory_class(labels),
+        "layout_id": layout_ids,
+        "instance_id": instance_ids,
+        "cup_centers": centers,
+        "cup_axes": axes,
+        "layout_centers": layout_centers,
+        "layout_axes": layout_axes,
+    }
+
+
 def _image_grid(images: np.ndarray, columns: int = 4, gap: int = 3) -> np.ndarray:
     rows = int(np.ceil(len(images) / columns))
     height, width = images.shape[1:3]
@@ -161,12 +240,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--random-episodes", type=int, default=4096)
     parser.add_argument("--audit-per-class", type=int, default=256)
+    parser.add_argument("--nuisance-layouts", type=int, default=12)
+    parser.add_argument("--nuisance-per-class", type=int, default=16)
     parser.add_argument("--steps", type=int, default=64)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--output-dir", type=Path, default=None)
     args = parser.parse_args()
 
-    if min(args.random_episodes, args.audit_per_class, args.steps) <= 0:
+    if min(
+        args.random_episodes,
+        args.audit_per_class,
+        args.nuisance_layouts,
+        args.nuisance_per_class,
+        args.steps,
+    ) <= 0:
         raise ValueError("episode counts and steps must be positive")
     run_id = datetime.now().strftime("point_cup_probe_%Y%m%d_%H%M%S")
     output_dir = args.output_dir or Path("outputs/skill_discovery/point_cup") / run_id
@@ -175,6 +262,13 @@ def main() -> None:
     base_config = ShapeWorldConfig(num_envs=args.random_episodes, episode_length=args.steps, seed=args.seed)
     discovery = _record_random(base_config, args.steps, args.seed)
     audit, audit_env = _record_balanced(base_config, args.steps, args.audit_per_class, args.seed + 100)
+    nuisance = _record_nuisance(
+        base_config,
+        args.steps,
+        args.nuisance_layouts,
+        args.nuisance_per_class,
+        args.seed + 200,
+    )
 
     np.savez_compressed(
         output_dir / "dataset.npz",
@@ -187,6 +281,17 @@ def main() -> None:
         audit_semantic_labels=audit["semantic_labels"],
         audit_episode_class=audit["episode_class"],
         audit_observed_class=audit["observed_class"],
+        nuisance_states=nuisance["states"],
+        nuisance_actions=nuisance["actions"],
+        nuisance_semantic_labels=nuisance["semantic_labels"],
+        nuisance_episode_class=nuisance["episode_class"],
+        nuisance_observed_class=nuisance["observed_class"],
+        nuisance_layout_id=nuisance["layout_id"],
+        nuisance_instance_id=nuisance["instance_id"],
+        nuisance_cup_centers=nuisance["cup_centers"],
+        nuisance_cup_axes=nuisance["cup_axes"],
+        nuisance_layout_centers=nuisance["layout_centers"],
+        nuisance_layout_axes=nuisance["layout_axes"],
         class_names=np.asarray(AUDIT_CLASSES),
     )
     config_payload = {
@@ -194,6 +299,8 @@ def main() -> None:
         "environment": asdict(base_config),
         "random_episodes": args.random_episodes,
         "audit_per_class": args.audit_per_class,
+        "nuisance_layouts": args.nuisance_layouts,
+        "nuisance_per_class": args.nuisance_per_class,
         "steps": args.steps,
         "seed": args.seed,
     }
