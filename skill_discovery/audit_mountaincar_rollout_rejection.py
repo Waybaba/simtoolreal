@@ -91,6 +91,18 @@ def predict_nearest(
     return predicted, nearest_distances
 
 
+def predict_classifier(
+    features: np.ndarray,
+    classifier: object,
+) -> tuple[np.ndarray, np.ndarray]:
+    probabilities = np.asarray(classifier.predict_proba(features), dtype=np.float64)
+    classes = np.asarray(classifier.classes_, dtype=np.int8)
+    nearest = np.argmax(probabilities, axis=1)
+    predictions = classes[nearest]
+    confidence = probabilities[np.arange(len(probabilities)), nearest]
+    return predictions.astype(np.int8), confidence
+
+
 def oracle_relation(next_state: np.ndarray, terminated: bool) -> int:
     matches = [
         class_index
@@ -115,12 +127,15 @@ def _flush_batch(
     all_oracle: list[np.ndarray],
     all_sources: list[np.ndarray],
     examples: dict[tuple[int, int], dict[str, object]],
+    classifier: object | None = None,
 ) -> None:
     if not frames:
         return
     batch = np.stack(frames).astype(np.uint8)
     features, _ = car_x_pair_features(batch, background)
-    if thresholds is None:
+    if classifier is not None:
+        predicted, nearest_distances = predict_classifier(features, classifier)
+    elif thresholds is None:
         predicted, nearest_distances = predict_nearest(
             features, reference_features, reference_classes
         )
@@ -137,10 +152,17 @@ def _flush_batch(
     for index, (expected, observed) in enumerate(zip(oracle, predicted, strict=True)):
         key = (int(expected), int(observed))
         if key not in examples:
+            score = (
+                {"confidence": float(nearest_distances[index])}
+                if classifier is not None
+                else {
+                    "nearest_squared_distance": float(nearest_distances[index])
+                }
+            )
             examples[key] = {
                 "oracle": int(expected),
                 "predicted": int(observed),
-                "nearest_squared_distance": float(nearest_distances[index]),
+                **score,
                 "frames": batch[index],
             }
     frames.clear()
@@ -155,6 +177,7 @@ def rollout_worker(
     reference_features: np.ndarray,
     reference_classes: np.ndarray,
     thresholds: np.ndarray | None,
+    classifier: object | None = None,
 ) -> dict[str, object]:
     env = gym.make("MountainCarContinuous-v0", render_mode="rgb_array")
     action_rng = np.random.default_rng(config.action_seed + worker_index)
@@ -190,6 +213,7 @@ def rollout_worker(
                 oracle_rows,
                 source_rows,
                 examples,
+                classifier,
             )
 
     try:
@@ -241,6 +265,7 @@ def rollout_worker(
             oracle_rows,
             source_rows,
             examples,
+            classifier,
         )
     finally:
         env.close()

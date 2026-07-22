@@ -3141,7 +3141,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/explicit_none_20260722_172
 
 ## Phase 6A：Frozen Visual Decision Tree
 
-状态：`balanced通过；natural adapter未实现`
+状态：`已完成；balanced通过、natural relation-macro gate失败`
 
 Phase 6A冻结Phase 5ZZ的五类dataset、pair-hash splits、median background和三维RGB car-motion features，只把Euclidean 1-NN替换为一个监督decision tree。它仍只消费RGB-derived `[x_t,x_t+1,delta]`，不读取state、action、oracle predicate或natural rollout labels。环境内已有scikit-learn `1.8.0`。
 
@@ -3171,6 +3171,19 @@ Run：`outputs/skill_discovery/mountaincar_continuous/visual_decision_tree_20260
 
 > [里程碑]
 > 在完全相同的data和RGB features上，固定decision tree把1-NN的0.956提升到0.992并让最低类recall达到0.977。Visual信息足够，关键改进来自学习语义边界而非增加样本。现在允许实现paired natural adapter。
+
+### Phase 6A Natural 结果：None FPR 修复，Relation Macro 略低
+
+Run：`outputs/skill_discovery/mountaincar_continuous/visual_tree_rollout_20260722_172922`
+
+- Paired config逐项等于Phase 5ZW；128 energy + 256x200 random仍产生相同61,382 transitions与oracle counts，coverage完整通过。
+- Combined relation recalls为left `0.936`、valley `0.920`、right `0.905`、goal `1.000`；各类均过0.90且goal过0.95，但macro `0.9404`低于冻结0.95，因此relation gate失败。
+- None false-positive rate仅`0.0105`（465/44,260），比四正类1-NN的0.672降低约64倍；none->goal为0，五个predicted classes均非空，none gate完整通过。
+- Energy relation macro为`0.9585`；random left/valley recalls为`0.752/0.911`，且大量near-boundary relations转为none。失败已从“普通none被正类吸收”转为“tree边界保守造成relation false negatives”。
+- 五类联系表人工通过。按预注册规则numeric final gate仍为fail：不接online reward、不重训tree、不调leaf/depth/confidence。
+
+> [里程碑]
+> Learned visual boundary基本解决了灾难性的reward假阳性，同时goal完全安全；剩余障碍是跨rollout分布的relation recall。下一metric应直接校准RGB motion到连续position/velocity，再应用冻结语义阈值，而不是继续调离散tree。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3668,6 +3681,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：同一5x256 reference/audit、同一三维RGB features；depth-5/21-node tree，无hyperparameter sweep。
 - 结果：accuracy/macro 0.9922，五类最低recall 0.9766；none recall 0.9844、goal 1.0。
 - 决定：允许实现不带confidence rejection的paired natural adapter；model和tree rules冻结，不用natural labels重训。
+
+### D-046：Visual Tree 将 None FPR 降至 1%，但 Natural Macro 为 0.940
+
+- 日期：2026-07-22
+- 证据：与Phase 5ZW完全相同的61,382 natural transitions；五类联系表人工通过。
+- 结果：none FPR 0.0105、none->goal 0、goal recall 1.0；left/valley/right recall 0.936/0.920/0.905，relation macro 0.9404未达0.95。
+- 决定：tree final gate失败，不接reward且不调model。下一候选改为reference-only视觉连续状态校准，再应用冻结关系阈值；natural labels仍只作最终audit。
 
 ## 实验日志
 
