@@ -2718,13 +2718,24 @@ Run：`gotoobject_blockwise_spread_balanced_transition_replay_rgb_object_graph_s
 
 ## Phase 5ZQ：RGB Object-graph Multi-seed Paired Replication
 
-状态：`预注册；待seeds 17/29`
+状态：`完成；representation 3/3 exact equivalent，strict temporal control 1/3`
 
 - 只补Phase 5X其余training seeds `17/29`，各自复用对应semantic source、5k+15k配置、layout/action RNG、balanced-transition、replay与evaluation checkpoints；唯一变化仍为`stage_source`。
 - 两个runs是CPU renderer/parser任务，不占GPU；按顺序运行，避免并发改变wall-time或系统调度后再误判paired reproducibility。
 - 每seed独立要求：1.28M visual queries mismatch为0、minimum exact-tile fraction 1.0、bootstrap assignment与其semantic source一致、13k/14k/15k及final control gate通过、Q keys/values/visits exact equal。
 - 2/2通过后，合并seed 7标记visual reward bridge为3/3。失败则保留seed 7结果，只定位发生在哪个layout/frame，不改templates或训练超参。
 - Multi-seed通过后停止MiniGrid template实验；下一representation问题是如何用learned detector/patch correspondence恢复同一object graph，而不是继续增加renderer-specific规则。
+
+### Phase 5ZQ 结果
+
+- Seeds `7/17/29` 共完成3,840,000次online visual reward queries，其中512,182个unique RGB由冻结parser处理；minimum exact-tile fraction均为1.0，visual/oracle stage mismatch总数为0。
+- 三个paired runs的relation keys、Q values、visits、全部checkpoint evaluations与final evaluation都和各自semantic source逐值exact equal。Representation substitution gate为`3/3`，证明RGB object graph在已覆盖的GoToObject exploration domain内是semantic stage的确定性替代。
+- Strict temporal control gate仍只有`1/3`：seed 7通过；seed 17在13k checkpoint的carried rate为0.889；seed 29在14k checkpoint的adjacent rate为0.891。两者在15k和独立final均恢复到0.90以上，但按预注册不能忽略中间失败。
+- Seed 17 final far/adjacent/carried为`0.980/0.977/0.930`，seed 29为`0.994/0.953/0.938`。这些值与对应semantic source完全相同，因此失败来自Phase 5X训练本身的temporal instability，不来自RGB parser或视觉reward替换。
+- Multi-seed summary：`outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_rgb_object_graph_multiseed_summary_20260722.json`。每个visual run目录另保存`paired_semantic_audit.json`。
+
+> [里程碑]
+> GoToObject renderer-aware RGB object graph已经完成3-seed online substitution：384万次视觉reward查询零误判，三条学习轨迹与state-semantic版本exact equal。与此同时，严格训练稳定性仍只有1/3；因此最终结论是“视觉metric桥接成功，control算法尚不稳定”，不是“视觉skill discovery已稳定复现”。按预注册停止继续堆MiniGrid templates。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3143,6 +3154,14 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 强核对：relation keys、Q values与visits全部exact equal，max Q difference 0。
 - 限制：这是显式MiniGrid renderer parser，不是learned visual representation。
 - 下一步：固定所有条件补seeds 17/29；3/3后停止template路线，转向learned object graph。
+
+### D-035：三种子证明 Visual Substitution，不掩盖 Control Failure
+
+- 日期：2026-07-22
+- 证据：seeds `7/17/29`共3.84M visual reward queries、512,182个unique RGB、零stage mismatch；Q/visits/evaluations/final均与各自semantic source exact equal。
+- 结果：representation equivalence为3/3；预注册strict temporal control只有1/3，因为seed 17的13k carried与seed 29的14k adjacent低于0.90。
+- 解释：视觉object graph没有改变任何训练结果，既精确继承成功，也精确继承Phase 5X已有的不稳定。不能用三个final checkpoint均通过替换预注册的last-3 gate。
+- 决定：关闭MiniGrid renderer-template分支；下一阶段转入公开`Pusher-v5`的环境/API/渲染门禁，再决定learned object relation metric。首轮不训练、不改reward，失败时不回头扫描MiniGrid模板。
 
 ## 实验日志
 

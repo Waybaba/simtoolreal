@@ -46,16 +46,22 @@ def paired_training_audit(
     )
     observer = visual["stage_observer"]
     recent = visual.get("evaluations", [])[-3:]
-    expected_recent = [13_000, 14_000, 15_000]
+    semantic_recent = semantic.get("evaluations", [])[-3:]
+    expected_recent = [row["policy_episodes"] for row in semantic_recent]
     recent_gate = bool(
         [row["policy_episodes"] for row in recent] == expected_recent
         and all(row["specialization_gate_passed"] for row in recent)
     )
+    expected_assignment = semantic["bootstrap_assigned_stages"]
     bootstrap_gate = bool(
         visual["bootstrap_gate_passed"]
-        and visual["bootstrap_assigned_stages"] == [0, 2, 1]
+        and visual["bootstrap_assigned_stages"] == expected_assignment
     )
-    paired_gate = bool(
+    evaluations_exact = visual.get("evaluations") == semantic.get("evaluations")
+    final_evaluation_exact = visual.get("final_evaluation") == semantic.get(
+        "final_evaluation"
+    )
+    representation_equivalence_gate = bool(
         visual_stage_source == "rgb_template_object_graph"
         and semantic_stage_source == "oracle_state"
         and config_exact_except_stage_source
@@ -63,11 +69,13 @@ def paired_training_audit(
         and observer["mismatch_count"] == 0
         and observer["minimum_exact_tile_fraction"] == 1.0
         and bootstrap_gate
-        and recent_gate
-        and visual["signal_gate_passed"]
         and q_comparison["exact_equal"]
+        and evaluations_exact
+        and final_evaluation_exact
     )
+    paired_gate = bool(representation_equivalence_gate and visual["signal_gate_passed"])
     output = {
+        "seed": visual["config"]["seed"],
         "visual_run": str(visual_run_dir.resolve()),
         "semantic_run": str(semantic_run_dir.resolve()),
         "visual_stage_source": visual_stage_source,
@@ -75,11 +83,17 @@ def paired_training_audit(
         "config_exact_except_stage_source": config_exact_except_stage_source,
         "stage_observer": observer,
         "bootstrap_gate_passed": bootstrap_gate,
+        "bootstrap_assignment": visual["bootstrap_assigned_stages"],
+        "expected_semantic_assignment": expected_assignment,
         "recent_checkpoint_episodes": [row["policy_episodes"] for row in recent],
         "recent_checkpoint_gate_passed": recent_gate,
+        "evaluations_exact_equal": evaluations_exact,
+        "final_evaluation_exact_equal": final_evaluation_exact,
         "final_evaluation": visual.get("final_evaluation"),
         "visual_signal_gate_passed": visual["signal_gate_passed"],
+        "semantic_signal_gate_passed": semantic["signal_gate_passed"],
         "q_table_comparison": q_comparison,
+        "representation_equivalence_gate_passed": representation_equivalence_gate,
         "paired_gate_passed": paired_gate,
     }
     output_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
