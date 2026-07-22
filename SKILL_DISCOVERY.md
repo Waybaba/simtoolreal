@@ -2913,6 +2913,35 @@ Run：`outputs/skill_discovery/mountaincar_continuous/frame_pair_capacity_202607
 > [里程碑]
 > Frame pair把MountainCar中单帧不可见的运动方向变成可审计视觉信号，并为四类都提供至少4,902种rendered equivalence classes。现在可以安全预注册256+256/class的balanced transition dataset；这仍只证明信息容量，不代表任何视觉metric或skill policy已通过。
 
+## Phase 5ZV：MountainCar Balanced Frame-pair Representation
+
+状态：`预注册；未生成正式数据`
+
+### Frozen Dataset
+
+- 完全复用Phase 5ZU四个relation predicates与proposal ranges。Reference RNG seed固定`3,100,007`，audit固定`4,100,007`；每split每class收集256个unique pair hashes，总计2,048 pairs / 4,096 official `400x600x3` RGB frames。
+- Reference/audit pair hashes交集必须为0，各split内部pair hashes unique。单帧hash允许跨pair或跨split重复，因为本实验的原子观测是有顺序的pair；必须单独报告before/after与pair uniqueness，不能把单帧重复隐藏起来。
+- 每条保存`state_t/action/state_t+1`作oracle audit、两个RGB、class与pair hash。State/action不能进入任何visual feature或1-NN distance。
+- 保存四class x 两split的before/after联系表；人工检查位置、方向和native-goal一致。Data gate通过后才运行GPU encoder。
+
+### Frozen Representations
+
+- `raw_pair_1nn`：每帧固定转grayscale并downsample到`30x20`，feature为两帧flatten后拼接，reference-label 1-NN。
+- `dinov2_pair_1nn`：冻结`facebook/dinov2-small` CLS分别编码before/after，feature为`[e_t,e_t+1,e_t+1-e_t]`后L2 normalize，reference-label 1-NN；不finetune、不crop。
+- `median_background_car_motion_1nn`：只用全部reference RGB逐像素median估计静态background；每帧absolute difference按column求和，以weighted centroid得到car x。Pair feature固定为`[x_t/600,x_t+1/600,(x_t+1-x_t)/600]`，reference-label 1-NN。不读取car template、position、velocity、class boundaries或audit labels。
+
+### Gates
+
+- Data gate：严格2,048 pairs、class/split counts全256、pair hashes split内unique且跨split交集0、所有state/action finite且class predicate为真、RGB shape/dtype正确。
+- Localization gate：audit中视觉`x_t/x_t+1`与oracle positions的Spearman绝对相关各`>=0.995`；视觉delta sign与oracle next velocity sign accuracy `>=0.99`。
+- Semantic gate：object-centric candidate audit accuracy与macro recall均`>=0.98`、四类recall各`>=0.95`、四个predicted classes均非空。
+- Raw与DINO是解释性baselines，不作为candidate通过条件。若DINO与candidate都通过，只结论“简单2D motion不需要generic encoder”；若candidate失败，不改background、feature、1-NN、class ranges或thresholds。
+
+只有representation与data gates都通过，下一步才设计online relation-skill control；当前阶段不把scripted controller或reference labels称为unsupervised discovery。
+
+> [大计划]
+> 先用四个CPU processes生成完整pair dataset并检查联系表；通过后在一张空闲GPU上一次性编码4,096帧DINO。长压缩/编码用约300秒阻塞等待，普通进度只写一行log。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
