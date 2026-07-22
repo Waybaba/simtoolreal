@@ -2407,6 +2407,17 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 > [里程碑]
 > DINO current作为DoorKey semantic-state metric通过独立fresh-group确认，说明foundation feature对key/door/goal对象状态具有可迁移信息；temporal delta的endpoint偏差也在第二套groups重复。上线前仍需连续轨迹cluster coherence与无label transition DAG gate，不能从独立frame accuracy直接跳到reward training。
 
+## Phase 5ZJ：Frozen Visual Cluster Sequence and DAG Gate
+
+状态：`连续trajectory协议已冻结，尚未运行`
+
+- 使用全新generation groups `97/107`，每group 128 common layouts x四个Phase 5ZC frozen policies。保存每条greedy option从reset到return的完整compact-state sequence、RGB、skill、env seed和native success，不训练policy。
+- 相同12-int compact state只保存/编码一张current RGB；若同一key出现不同RGB或不同oracle stage，立即判state alias并停止。DINO current与Phase 5ZG frozen centers/mapping不refit。
+- 同时报告unique-state accuracy/recall和按sequence occurrences加权的accuracy/recall；两者沿用overall `>=0.85`、四stage recall各 `>=0.75`。Labels只用于audit，不参与cluster prediction或graph construction。
+- Transition graph只使用未命名cluster IDs和连续sequence changes；边支持仍要求count `>=25`且占target incoming至少1%。所有reset必须落在唯一root cluster，native goal terminals必须落在唯一goal cluster。
+- Structural DAG gate要求四clusters非空、每个非root cluster有supported predecessor、graph无环，并且四个cluster的transitive-ancestor cardinalities排序后恰为 `[0,1,2,3]`；这表示无label sequence恢复一条可组合四阶段链。
+- 若accuracy与DAG gates同时通过，下一大计划才实现on-demand finite visual lookup和online discovery；若任一失败，停止online visual reward，不通过调整edge threshold、refit centers或oracle修边追结果。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
