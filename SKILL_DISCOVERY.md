@@ -5,7 +5,7 @@
 >
 > 当前阶段：Phase 3 fixed-layout gate 已通过但 layout generalization 失败；Phase 4A 官方 MiniGrid 环境审计已通过，Phase 4B 正在定位长时序 PPO 的部署失败。
 >
-> 当前动作：Phase 5A DINOv2-small visual gate 已通过，1-NN/triplet 0.837，明显高于 raw 0.371；embeddings 已缓存。下一步 Phase 5B 先做无标签 K=3 clustering audit，不直接把 outcome labels 注入 reward。
+> 当前动作：Phase 5B DINOv2 K=3 clustering gate 已通过，audit accuracy 0.740、NMI 0.704；train clusters 完美平衡。下一步先构建 frozen cluster lookup cache，确认无需在线 GPU 或 outcome labels 即可从 state trajectory 重建 cluster id。
 
 ## 一眼看完整流程
 
@@ -1122,7 +1122,7 @@ Run：`frozenlake_dinov2_small_20260722_0825`
 
 ## Phase 5B：Unsupervised Visual Prototype Audit
 
-状态：`计划已冻结`
+状态：`通过，存在 audit-safe style collapse`
 
 先不把 DINO embedding 放入 RL reward；用 train seeds 的无标签 trajectory embeddings 做 `K=3` clustering，audit seeds 只预测 cluster。Outcome labels 仅在训练后用于 Hungarian alignment 和评价：
 
@@ -1130,6 +1130,37 @@ Run：`frozenlake_dinov2_small_20260722_0825`
 - 报告 audit aligned accuracy、NMI、每 cluster size、每 outcome recall 和 collapse。
 - Gate：DINO audit aligned accuracy `>=0.70`，所有三个 clusters 非空，且至少高于 raw pixels `0.15`。
 - 若通过，cluster id 才成为下一轮 visual semantic reward 候选；若失败，下一步只做少量 reference prototype calibration，不把 labels 偷放进“无监督”方法。
+
+### Phase 5B K=3 Clustering 结果：通过
+
+Run：`frozenlake_visual_clusters_20260722_0842`
+
+| Representation | Audit aligned accuracy | NMI | ARI | Audit clusters nonempty |
+| --- | ---: | ---: | ---: | ---: |
+| Raw pixels | 0.414 | 0.093 | 0.023 | no |
+| Random projection | 0.349 | 0.033 | 0.032 | no |
+| DINOv2-small | **0.740** | **0.704** | **0.567** | **yes** |
+| Semantic oracle | 1.000 | 1.000 | 1.000 | yes |
+
+- KMeans 只看 train embeddings；outcome labels 在拟合后才用于 3! mapping 与评价。
+- DINO train clusters 为 `384/384/384`，事后 aligned accuracy 1.0；audit clusters 为 `56/456/256`。
+- DINO audit recall：safe `0.2188`、hole `1.0000`、goal `1.0000`。Style-shifted safe 是唯一显著 collapse，不能被总 accuracy 隐藏。
+- Raw/random 在 audit 中各有一个空 cluster，未通过结构 gate。
+
+![FrozenLake visual cluster comparison](outputs/skill_discovery/frozenlake_visual/frozenlake_visual_clusters_20260722_0842/cluster_comparison.svg)
+
+> [结果]
+> Frozen DINO embeddings 在原始 train style 中自然形成三类 outcome clusters，并在 audit style shift 下保留 hole/goal、部分丢失 safe。它已达到“visual reward 候选”门槛，但还不是 style-robust oracle replacement。
+
+## Phase 5C：Frozen Visual Cluster Reward Bridge
+
+状态：`lookup cache 计划已冻结，训练尚未开始`
+
+1. 从 train dataset 的 frame embeddings 构建 finite lookup：active safe tile、terminal hole tile、terminal goal 各自的 frozen DINO frame vector；保存 KMeans centers。
+2. 用 state trajectory 的 start/middle/final keys 查询三帧、拼接并预测 cluster id；不在线 render/DINO，不读取 outcome label。
+3. 先在完整 cached train dataset 重建 cluster assignments，要求与直接 DINO KMeans prediction 一致率 `>=0.99`。
+4. 通过后给 FrozenLake trainer 新增 `visual_cluster` objective：reward 只使用预测 cluster id 做 plain DIAYN，native/semantic outcome 只用于 evaluation。
+5. 第一轮沿用 Phase 4D seed 7、100k visit-decay 与 class-specific gates。若失败，记录 visual-cluster reward gap，不用 oracle label修补 cluster。
 
 ## Phase 6：迁移到 Hammer
 
@@ -1397,6 +1428,13 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - DINOv2-small：1-NN/triplet 0.837，hole/goal recall 1.0，safe recall 0.512。
 - 决定：不换第二个 encoder；先检验无标签 K=3 clusters 是否对应 outcomes，再决定能否作为 reward representation。
 
+### D-026：DINO K=3 Gate 通过，先做有限 Lookup 再训练
+
+- 日期：2026-07-22
+- DINO KMeans：train accuracy 1.0；audit aligned accuracy 0.740、NMI 0.704，三个 clusters 非空。
+- 限制：audit safe recall 0.219，style shift 会把 safe 并入 goal cluster。
+- 决定：先从 cached frame embeddings 构建无在线 GPU lookup，并要求重建 cluster assignment >=0.99；通过后才运行 visual-cluster DIAYN。
+
 ## 实验日志
 
 ### 2026-07-22：项目启动
@@ -1579,3 +1617,14 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 > [计划]
 > 下一步只对缓存 DINO trajectories 做无标签 K=3 clustering，并用 outcome labels 事后评价；通过前不进入 online reward。
+
+### 2026-07-22：DINOv2 K=3 Cluster Gate 通过
+
+> [结果]
+> DINO train clusters 完美平衡，audit accuracy/NMI 为 0.740/0.704；raw/random audit 都出现空 cluster。Labels 只用于事后 alignment。
+
+> [问题]
+> Audit safe recall 仅0.219，说明 cluster representation 对 style shift 尚不公平。下一步只验证原始 renderer 的 finite embedding lookup，不声称跨 style reward 已解决。
+
+> [计划]
+> 构建 start/middle/final state-to-DINO lookup 与 KMeans center cache，先要求 cached train assignment 重建 >=0.99，再开始 seed-7 visual-cluster reward。
