@@ -2264,7 +2264,7 @@ Run：`doorkey8_tabular_balanced_control_actionmask_optionterm_seed7_20260722_12
 
 ## Phase 5ZF：DoorKey 5x5 Masked Neural Control
 
-状态：`单变量neural control协议已冻结，尚未运行`
+状态：`250k完整运行；neural control gate正式失败，停止8x transfer`
 
 - 先回到更简单的官方 `MiniGrid-DoorKey-5x5-v0`，只验证函数逼近control，不运行online discovery。训练使用Stable-Baselines3生态的MaskablePPO，避免新写PPO update；CPU运行，不占IsaacLab GPU。
 - 固定Phase 5ZC的四个identity oracle targets和rows：navigation `[1,-1,-1,-1]`、key `[0,1,-1,-1]`、door `[0,0,1,-1]`、goal `[0,0,0,1]`。Native reward只进入evaluation info。
@@ -2273,6 +2273,30 @@ Run：`doorkey8_tabular_balanced_control_actionmask_optionterm_seed7_20260722_12
 - 复用旧Phase 4B的`250k total timesteps`、8 envs、`n_steps=256`、batch 256、4 epochs、MLP `[256,256]`、learning rate `2.5e-4`、`ent_coef=0.01`、seed 7；因此不把结果差异归因于增加预算或网络。
 - Checkpoints固定50k/100k/150k/200k/250k，每次64 independent layouts/skill；final另256 layouts/skill。Gate要求四个fixed-target furthest rates、四个final-state rates和goal native success各 `>=0.80`，且150k/200k/250k全部通过；不允许best permutation替代oracle targets。
 - 保存policy、metrics、curves、action-mask统计和四skill contact sheet/manifest，并人工检查key carried、door final open、goal native success。若5x5通过，才单独冻结8x8 neural scale transfer；若失败，不调entropy、预算或reward，记录与旧PPO和tabular control的差异后停止该分支。
+
+### 250k Masked PPO 结果
+
+Run：`doorkey5_masked_ppo_control_seed7_20260722_122433`
+
+| Timesteps | Navigation | Key | Door | Goal/native | Gate |
+| ---: | ---: | ---: | ---: | ---: | :---: |
+| 50k | 1.000 | 0.000 | 0.000 | 0.000 | fail |
+| 100k | 1.000 | 0.000 | 0.000 | 0.000 | fail |
+| 150k | 1.000 | 0.000 | 0.000 | 0.000 | fail |
+| 200k | 1.000 | 0.000 | 0.000 | 0.000 | fail |
+| 250k | 1.000 | 0.000 | 0.000 | 0.000 | fail |
+| Independent final | 1.000 | 0.000 | 0.000 | 0.000 | fail |
+
+- Data环境新增并记录 `sb3-contrib 2.9.0`，与 `stable-baselines3 2.9.0`匹配；完整run训练主体180.7秒，102项全套tests通过。失败不是依赖或未完成run。
+- Training终局按skill分别约985/1087/994/984 episodes；key target有149次真实pickup、door target有29次open，但goal target只有2次native success。稀疏后段经验没有凝结成deterministic policy。
+- 五个checkpoints和independent 256-layout final中，四skills均输出同一类navigation policy并跑满64步。Manifest action序列反复left/forward，key/door/goal都没有target-state representative。
+- Contact sheet人工检查四行都没有携带key、门保持closed、native success=false；画面与全零后三级rates一致。Action mask阻止invalid no-op，却没有打破shared network忽略skill one-hot的policy collapse。
+- 相比旧Phase 4B balanced PPO曾有高stochastic goal但deterministic失败，本轮option termination和mask改善了接口，却进一步确认terminal sparse reward下的on-policy函数逼近不是tabular成功的直接替代。
+
+![DoorKey masked PPO failed control audit](outputs/skill_discovery/minigrid_doorkey_training/doorkey5_masked_ppo_control_seed7_20260722_122433/policy_rollout_audit.png)
+
+> [失败记录]
+> 5x5 neural control upper bound未通过，因此取消8x8 masked-PPO transfer，不调entropy、预算、reward或network。DoorKey当前可靠结论仍是5x5 tabular online discovery 3/3；其扩展瓶颈是可泛化control与稀疏credit，而不是semantic assignment本身。
 
 ## Phase 6：迁移到 Hammer
 
