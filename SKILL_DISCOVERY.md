@@ -1555,7 +1555,7 @@ Run：`gotoobject_audit_20260722_070736`
 
 ## Phase 5K：GoToObject Occupancy-reward Control Diagnostic
 
-状态：`20k diagnostic 通过；100k formal 计划已冻结，尚未运行`
+状态：`20k diagnostic 与 100k formal 均通过；control/reward gate 完成`
 
 - 环境、mission-free policy key、五动作、seed 7、gamma 0.99、visit-count learning rate、epsilon schedule 与三 skill target permutation 全部保持 Phase 5J 不变。
 - 唯一干预：从第64步 exact-terminal reward 改为每步 transition 后的 stage occupancy reward `1[stage(s_next)==target(skill)]`。这让 stationary state 的 reward/transition contract 不再依赖隐藏 timestep，也更接近后续 per-step DIAYN reward。
@@ -1592,6 +1592,37 @@ Run：`gotoobject_balanced_occupancy_seed7_diagnostic_20260722_075406`
 - 保持 occupancy reward、seed 7、horizon 64和其余Phase 5J参数；100k episodes，eval every5k，1,024 common-random-number layouts/skill。
 - Independent-final far/adjacent/carried各 `>=0.90`，last-5 checkpoints全部通过；仍需人工核对 carried object removal与三条代表轨迹。
 - Formal通过后，下一阶段才在相同occupancy配置下预注册 random/plain semantic/semantic-spread objective comparison。
+
+### 100k Formal 结果
+
+Run：`gotoobject_balanced_occupancy_seed7_formal_20260722_080420`
+
+- 20 个 checkpoints 全部存在，耗时 `1999.18s`，Q table仍为7,680 states；reward calls约2.13M/skill。
+- 20k之后所有 checkpoints都通过。该区间最差 far/adjacent/carried仍为 `0.989/0.988/0.970`；80k--100k last-5全部通过，95k和100k fixed-eval三类均为 `1.000`。
+- Independent-final 3x3 matrix为 skill0 `[far=0.000, adjacent=0.003, carried=0.997]`、skill1 `[1.000, 0.000, 0.000]`、skill2 `[0.000, 1.000, 0.000]`。Matched far/adjacent/carried为 `1.000/1.000/0.997`。
+- 代表轨迹再次确认skill0真实pickup黄色球：floor objects `2->1`、`carrying=[ball, yellow]`；far和adjacent行为也与定义一致。
+
+![GoToObject occupancy-reward 100k formal audit](outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_balanced_occupancy_seed7_formal_20260722_080420/policy_rollout_audit.png)
+
+> [里程碑]
+> GoToObject mission-free compact control在occupancy reward下长期稳定通过。Phase 5J的失败来自exact-terminal hidden-time aliasing，不是环境、状态覆盖或tabular capacity不足。Balanced oracle只关闭control/reward gate，不算无监督skill discovery结果。
+
+## Phase 5L：GoToObject Discovery-objective Comparison
+
+状态：`20k comparison 计划已冻结，尚未运行`
+
+### 唯一变量与配置
+
+- 固定Phase 5K occupancy reward timing、mission-free compact state、五动作、seed 7、horizon 64、gamma 0.99、visit-count learning rate与epsilon schedule。
+- 只比较三种objective：`random`（zero-reward negative control）、`semantic`（online `log p(z|stage)`）、`semantic_spread`（semantic reward加stage coverage term）。Balanced oracle只作已完成上界，不重复运行。
+- 每种objective先跑20k episodes，eval every2k，512 common-random-number layouts/skill，last-3 stability；三个CPU进程可并行，互不共享reward counts或Q table。
+
+### 预注册指标与门控
+
+- 主指标：best-permutation后的far/adjacent/carried rates、三者最小值、均值、3x3 outcome matrix、assignment稳定性与last-3 checkpoints。
+- `random`是negative control，预期不能三类同时达到0.90；若通过，说明evaluation/class定义存在泄漏，停止解释其他objectives。
+- `semantic`与`semantic_spread`各自通过门控均为independent-final三类 `>=0.90` 且last-3全部通过。只有通过者才晋级100k formal；若两者都通过，优先比较最小stage rate和checkpoint稳定性，不追加调参。
+- 若两者都失败，不延长预算；先审计online reward的按skill/stage counts、reward sums和策略outcome，判断是自然stage imbalance还是non-stationary discriminator credit。
 
 ## Phase 6：迁移到 Hammer
 
