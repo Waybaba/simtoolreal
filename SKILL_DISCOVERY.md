@@ -3141,7 +3141,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/explicit_none_20260722_172
 
 ## Phase 6A：Frozen Visual Decision Tree
 
-状态：`预注册；未训练`
+状态：`balanced通过；natural adapter未实现`
 
 Phase 6A冻结Phase 5ZZ的五类dataset、pair-hash splits、median background和三维RGB car-motion features，只把Euclidean 1-NN替换为一个监督decision tree。它仍只消费RGB-derived `[x_t,x_t+1,delta]`，不读取state、action、oracle predicate或natural rollout labels。环境内已有scikit-learn `1.8.0`。
 
@@ -3159,6 +3159,18 @@ Phase 6A冻结Phase 5ZZ的五类dataset、pair-hash splits、median background�
 
 > [大计划]
 > 先实现只包含fit、balanced audit和tree export的CPU脚本。Balanced通过以前不实现或运行natural adapter；长任务继续按约300秒阻塞等待。
+
+### Phase 6A Balanced 结果：可解释 Tree 通过
+
+Run：`outputs/skill_discovery/mountaincar_continuous/visual_decision_tree_20260722_172643`
+
+- Data integrity与5x256 reference/audit counts通过。冻结tree实际depth 5、21 nodes；feature importances为x-before `0.283`、x-after `0.322`、delta `0.394`，三项均被使用。
+- Balanced accuracy/macro均为`0.9922`。Recalls为none `0.984`、left `0.977`、valley/right/goal均`1.000`；五个predicted classes均非空。
+- Confusion只有10/1280个错误：none误报left/valley/right各2/1/1，left误报none 6；none->goal为0。全部预注册balanced gates通过。
+- 导出规则仅包含三个RGB-derived features；主delta split约为`-0.00271/+0.00271`，随后按视觉位置分relation区间，没有state/action字段。模型和文本规则已保存。
+
+> [里程碑]
+> 在完全相同的data和RGB features上，固定decision tree把1-NN的0.956提升到0.992并让最低类recall达到0.977。Visual信息足够，关键改进来自学习语义边界而非增加样本。现在允许实现paired natural adapter。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3649,6 +3661,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：visible-stratified dataset全部data gates通过；balanced five-class accuracy/macro仅0.9563，none recall 0.863。
 - 结果：三个threshold-stratum recalls为0.719/0.594/0.781，其他strata最高1.0；四正类recalls仍约0.97-0.99，none->goal为0。
 - 决定：按停止条件不运行natural、不做第三版none samples。关闭冻结三维feature+Euclidean 1-NN路线；下一方案必须预注册新的learned classifier/uncertainty metric family，并保留现有split作为不可调最终对照。
+
+### D-045：Frozen Visual Decision Tree 通过 Balanced Gate
+
+- 日期：2026-07-22
+- 证据：同一5x256 reference/audit、同一三维RGB features；depth-5/21-node tree，无hyperparameter sweep。
+- 结果：accuracy/macro 0.9922，五类最低recall 0.9766；none recall 0.9844、goal 1.0。
+- 决定：允许实现不带confidence rejection的paired natural adapter；model和tree rules冻结，不用natural labels重训。
 
 ## 实验日志
 
