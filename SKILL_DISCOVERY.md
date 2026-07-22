@@ -2231,12 +2231,36 @@ Bootstrap在5k后得到independent top stages `[2,1,0,3]`，即skill顺序为doo
 
 ## Phase 5ZE：DoorKey 8x8 Control Scale Transfer
 
-状态：`seed 7单变量control计划已冻结，尚未运行`
+状态：`seed 7完成；control gate正式失败，不运行8x8 discovery`
 
 - 只把官方环境从 `MiniGrid-DoorKey-5x5-v0` 改为 `MiniGrid-DoorKey-8x8-v0`。固定Phase 5ZC的identity oracle rows、layout-aware compact state、五个official actions、state-changing mask、target-reaching option termination、Q update、seed 7和20k预算。
 - Horizon仍为64。Phase 4A的scripted audit已证明8x8五个seeds的真实解需要13--22 official actions，因此本阶段不随grid尺寸扩大horizon；这样可以把差异集中在layout/state coverage。
 - CRN仍按每四skills共享一个reset seed。Checkpoints固定4k/8k/12k/18k/19k/20k，每次512 layouts/skill，independent final另512；gate仍要求四个furthest rates、四个final-state rates和goal native success各 `>=0.80`，last-3全部通过。
 - 这是control upper bound，不是discovery结果。若通过，才冻结8x8的5k bootstrap+15k policy online-discovery复现；若失败，不增加预算或改reward，先报告Q-state coverage、失败stage和代表轨迹，停止8x8 discovery。
+
+### 20k Scale-transfer 结果
+
+Run：`doorkey8_tabular_balanced_control_actionmask_optionterm_seed7_20260722_120620`
+
+| Episodes | Navigation | Key | Door | Goal/native | Gate |
+| ---: | ---: | ---: | ---: | ---: | :---: |
+| 4k | 1.000 | 0.305 | 0.127 | 0.000 | fail |
+| 8k | 1.000 | 0.408 | 0.295 | 0.000 | fail |
+| 12k | 1.000 | 0.445 | 0.377 | 0.000 | fail |
+| 18k | 1.000 | 0.521 | 0.451 | 0.000 | fail |
+| 19k | 1.000 | 0.535 | 0.463 | 0.000 | fail |
+| 20k | 1.000 | 0.543 | 0.469 | 0.000 | fail |
+| Independent final | 1.000 | 0.598 | 0.482 | 0.000 | fail |
+
+- Furthest与final-state rates完全相同，说明option termination仍正确；失败不是“曾达到但没有保持”。Contact sheet人工检查中key与door代表行真实完成pickup/open，goal行64步停在初始区域，和0.000 native success一致。
+- Q table从5x5的160 states扩大到24665 states。20k training中goal skill只有8次native success，5x5同协议为4248次；8x8 goal terminal counts为navigation/key/door/goal `2199/2236/557/8`，credit来源不足三个数量级。
+- 5000 training layouts有3842个unique compact initial states，512 independent layouts有495个；只有38.1%的evaluation initials在training initial set中。不过所有evaluation initials都曾作为某条训练trajectory中的Q state出现，evaluation轨迹按skill有93.2%--97.0%的state occurrences带该skill visits。
+- 在training加independent共5512 layouts上，compact initial state到full grid signature为一一对应，ambiguous keys为0。因此没有证据把失败归因于隐藏wall/layout alias；主限制是绝对坐标tabular state explosion加稀疏goal exploration。
+
+![DoorKey 8x8 failed control audit](outputs/skill_discovery/minigrid_doorkey_training/doorkey8_tabular_balanced_control_actionmask_optionterm_seed7_20260722_120620/policy_rollout_audit.png)
+
+> [失败记录]
+> 8x8 oracle control未通过，所以按预注册规则停止8x8 online discovery，不增加episode budget、不调reward，也不把5x5的3/3外推到更大layout。下一诊断应改变可泛化的policy/state representation，而不是继续要求absolute-coordinate Q table记忆更多layouts。
 
 ## Phase 6：迁移到 Hammer
 
