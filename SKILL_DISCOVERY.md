@@ -2548,6 +2548,26 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 > [里程碑]
 > Phase 5ZL正式0/3失败。Phase 5ZK只证明causal decoder适用于frozen successful-policy distribution；online exploration覆盖更多key/door poses，raw goal cluster混入open-door states，而不可回退decoder把错误永久锁成goal。Semantic-spread于是奖励大量“开门后特定pose”而不是真正到达goal。该结果建立了明确的offline-policy→online-exploration representation gap，按预注册停止DoorKey online visual reward，不添加native terminal oracle或在失败runs上调视觉规则。
 
+## Phase 5ZM：Gymnasium Taxi-v4 Public Graphical Environment Gate
+
+状态：`环境运行前协议冻结，尚未实现`
+
+### 选择理由与已知边界
+
+- 下一环境固定为本机Gymnasium 1.3.0官方 `Taxi-v4`，不是自建环境、IsaacLab或物理仿真。它有25个taxi位置、passenger waiting/in-taxi状态和四个destination，天然形成 `navigate/waiting → passenger onboard → delivered` 的可组合链。
+- Taxi位置产生大体积geometric variation，而pickup与successful dropoff是小体积semantic events，直接对应“raw state volume可能压过rare meaningful interaction”的原始问题。
+- Policy仍是离散控制，不能外推到机械臂。该环境的价值是先检查online exploration distribution能否被完整覆盖，再决定是否值得回到连续manipulation。
+- Official RGB根据上一条移动action改变taxi orientation；同一500-state observation可能对应多张RGB。因此禁止沿用DoorKey compact-state→single-frame cache，后续视觉数据必须保留orientation/trajectory frame并把它作为nuisance audit。
+
+### Environment Gate
+
+- 核对observation为500、action为6、dry transition deterministic、RGB shape固定为350x550；从300个合法initial states沿official transition graph枚举出的reachable states必须为404，其中successful terminal states为4。
+- Seeds `7/17/29/37/47`各从official reset运行最短合法script：到passenger、pickup、到destination、dropoff。每条必须只发生一次legal pickup、以reward `+20` native termination结束，并保存waiting/onboard/delivered frames。
+- 每个seed另运行illegal pickup与illegal dropoff反例，要求reward `-10`、state不发生semantic progress、不得标成onboard或delivered。
+- 对每个scripted关键state渲染四种taxi orientations；要求shape/dtype一致、同stage orientation确实可改变pixels，同时waiting/onboard/delivered三stage在至少一个共同layout context下不是相同图像。人工检查contact sheet中的passenger disappearance、taxi、hotel与terminal passenger均真实可见。
+- 运行4,096条只采样official action mask的random episodes、horizon 200，报告pickup/onboard/delivered频率；onboard与native delivered均至少出现一次才说明rare modes可由自然探索到达。该频率只用于设计后续balanced audit，不作为算法成功。
+- Gate通过后，下一大计划才定义Taxi的train/audit state-pair split与raw/DINO/semantic metric；通过前不训练skill objective、不编码全量DINO、不增加rainy/fickle variants。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
