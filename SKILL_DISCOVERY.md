@@ -2022,12 +2022,27 @@ Summary：`gotoobject_balanced_transition_replay_multiseed_7_17_29_20260722_1054
 
 ## Phase 5Y：Multi-training-seed Final Robustness Audit
 
-状态：`evaluation-only 15-block计划已冻结，尚未运行`
+状态：`evaluation-only完成；15/15 held-out blocks通过`
 
 - 输入固定为Phase 5X seeds `7/17/29` 的final `q_table.npz`；不继续训练、不选择checkpoint、不修改reward matrix。
 - 每个training seed使用Phase 5U同一协议：5个held-out blocks，block offsets为 `1,100,000 + index*100,000`，每block 512 common layouts/skill。总计15个evaluation blocks，且都与training/checkpoint/final seeds不重叠。
 - 每个block独立assignment后far/adjacent/carried均需 `>=0.90`。Per-training-seed gate要求5/5；method robustness gate要求15/15。报告每个training seed和跨15 blocks的mean/std/worst。
 - Audit不得修改Phase 5X `1/3 temporal gate` 的正式结果。若15/15通过，停止GoToObject tabular算法搜索并进入下一环境设计；若失败，不重训，先报告失败集中在哪个training seed/stage/layout block。
+
+### 15-block 结果
+
+| Training seed | Blocks passed | Far mean/worst | Adjacent mean/worst | Carried mean/worst |
+| ---: | :---: | ---: | ---: | ---: |
+| 7 | 5/5 | 0.980 / 0.975 | 0.954 / 0.947 | 0.933 / 0.926 |
+| 17 | 5/5 | 0.977 / 0.973 | 0.977 / 0.967 | 0.926 / 0.910 |
+| 29 | 5/5 | 0.980 / 0.979 | 0.959 / 0.951 | 0.943 / 0.932 |
+
+- Method robustness gate为15/15。跨15 blocks的far/adjacent/carried mean为 `0.979/0.964/0.934`，std为 `0.0036/0.0119/0.0106`，worst仍为 `0.973/0.947/0.910`。
+- 每个training seed的5个blocks都保持与其balanced target相同的assignment；没有靠evaluation时重新交换rows掩盖失败。
+- Phase 5X仍保留 `1/3 temporal gate` formal fail。Phase 5Y只证明训练结束保存的三份policy在大量新layouts上稳定，不声称整个训练轨迹单调稳定。
+
+> [里程碑]
+> GoToObject tabular搜索停止。最终可保留的方法结构是：online spread发现clusters、global balanced assignment、transition-predecessor reward floor、bootstrap frozen-reward relabel replay和独立final-block审计。它在3个training seeds上得到3/3 final pass与15/15 held-out blocks，但temporal snapshots仍有门槛附近波动。下一环境应增加阶段数与组合深度，而不是继续优化这个toy gate。
 
 ## Phase 6：迁移到 Hammer
 
