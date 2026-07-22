@@ -3044,7 +3044,7 @@ Five-class audit：`outputs/skill_discovery/mountaincar_continuous/explicit_none
 
 ## Phase 5ZY：Predicate-boundary Stratified None
 
-状态：`预注册；未运行capacity audit`
+状态：`已完成；capacity gate失败，未生成正式data`
 
 Phase 5ZX的失败分析只使用其冻结balanced audit：24个none误报全部位于left/valley/right对应position区间，next velocity靠近relation阈值；没有运行或查看新的natural rollout。Phase 5ZY保留四个relation shards、Phase 5ZV median background、三维`[x_t,x_t+1,delta]` feature、Euclidean 1-NN及全部gates，只替换none的uniform proposal。
 
@@ -3076,6 +3076,18 @@ Action proposal对所有层固定uniform `[-1,1]`。区间、层数和相等配�
 
 > [大计划]
 > 先用CPU完成八层capacity audit和人工联系表；通过后生成分层none。Balanced gate通过以前不运行61k natural transitions；长命令按约300秒阻塞等待。
+
+### Phase 5ZY 结果：Valley Threshold Motion Capacity 不足
+
+Run：`outputs/skill_discovery/mountaincar_continuous/stratified_none_capacity_20260722_171633`
+
+- 八层各接受256个official transitions；predicate和finite checks全通过，每层unique pair hashes为`254/255/256/252/256/253/256/251`，全部远高于128门槛。
+- 七层motion-visible rate为`0.961-1.000`并通过；`valley_threshold`为`0.9414`（241/256），低于冻结的`0.95`，因此combined numeric gate失败。
+- 联系表人工确认八层位置/方向正确；失败层中的近零速度会让before/after车辆落在相同渲染像素。人工可读性不覆盖numeric gate。
+- 按预注册规则没有生成正式reference/audit，没有运行balanced classifier或natural rollout，也没有把门槛降到0.94。
+
+> [里程碑]
+> 第一版position/motion分层在数据容量阶段即停止：语义与hash容量足够，但`valley_threshold`包含过多RGB不可见的近零位移。Phase 5ZY失败，不允许用该层继续正式实验。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3552,6 +3564,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：none reference/audit各256且hash完全隔离；五类balanced accuracy/macro为0.9734。
 - 结果：四正类recall仍为0.988/0.988/0.996/0.988，但none recall仅0.906；24/256个none被left/valley/right吸收，none->goal为0。
 - 决定：按预注册顺序停止natural rerun，不接reward。下一唯一候选为position/motion regime分层none；不能从natural confusion挑样本，也不调classifier或feature。
+
+### D-043：首个 Stratified None 在 Motion Capacity Gate 停止
+
+- 日期：2026-07-22
+- 证据：八层各256个accepted transitions；unique pairs均`>=251`，但valley-threshold motion-visible仅0.9414。
+- 解释：接近零速度的official transitions语义合法，但约5.9%在400x600 RGB中没有像素级位移，不满足visual relation data门槛。
+- 决定：联系表通过不能覆盖numeric failure；不生成正式data、不降低0.95门槛。若继续该方向，必须作为新阶段预注册可见运动下界，而不能修改本次run。
 
 ## 实验日志
 
