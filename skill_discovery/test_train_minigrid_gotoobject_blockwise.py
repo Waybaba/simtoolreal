@@ -10,6 +10,7 @@ import numpy as np
 
 from skill_discovery.train_minigrid_gotoobject_blockwise import (
     BlockwiseSpreadConfig,
+    StageObserver,
     _is_evaluation_checkpoint,
     _replay_frozen_transitions,
     common_layout_seed,
@@ -17,6 +18,7 @@ from skill_discovery.train_minigrid_gotoobject_blockwise import (
     snapshot_spread_matrix,
     train_blockwise_run,
 )
+from skill_discovery.minigrid_gotoobject import make_gotoobject
 from skill_discovery.train_minigrid_gotoobject_skills import (
     GoToObjectReward,
     GoToObjectTrainConfig,
@@ -24,6 +26,26 @@ from skill_discovery.train_minigrid_gotoobject_skills import (
 
 
 class BlockwiseSpreadTrainerTest(unittest.TestCase):
+    def test_visual_stage_observer_is_cached_and_matches_oracle(self) -> None:
+        env = make_gotoobject(render_mode="rgb_array")
+        observer = StageObserver("rgb_template_object_graph")
+        try:
+            env.reset(seed=7)
+            first = observer.stage(env)
+            second = observer.stage(env)
+        finally:
+            env.close()
+        self.assertEqual(first, second)
+        self.assertEqual(observer.query_count, 2)
+        self.assertEqual(observer.parser_calls, 1)
+        self.assertEqual(observer.cache_hits, 1)
+        self.assertEqual(observer.mismatch_count, 0)
+        self.assertEqual(observer.minimum_exact_tile_fraction, 1.0)
+
+    def test_unknown_stage_source_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "stage source"):
+            BlockwiseSpreadConfig(stage_source="unknown")
+
     def test_common_layout_seed_groups_three_skills(self) -> None:
         seeds = [common_layout_seed(7, 500_000, episode) for episode in range(6)]
         self.assertEqual(seeds[:3], [7_500_000] * 3)

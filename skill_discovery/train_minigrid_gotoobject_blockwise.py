@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import time
 from dataclasses import asdict, dataclass
@@ -21,6 +22,10 @@ from skill_discovery.minigrid_gotoobject import (
     GOTOOBJECT_STAGES,
     make_gotoobject,
     semantic_stage,
+)
+from skill_discovery.evaluate_gotoobject_object_graph import (
+    build_tile_templates,
+    parse_object_graph,
 )
 from skill_discovery.train_minigrid_gotoobject_skills import (
     POLICY_ACTIONS,
@@ -63,6 +68,7 @@ class BlockwiseSpreadConfig:
     eval_episodes_per_skill: int = 512
     stability_checkpoints: int = 3
     stage_rate_gates: tuple[float, float, float] = (0.90, 0.90, 0.90)
+    stage_source: str = "oracle_state"
 
     def __post_init__(self) -> None:
         if self.num_skills != len(GOTOOBJECT_STAGES):
@@ -96,6 +102,76 @@ class BlockwiseSpreadConfig:
             raise ValueError("stability checkpoints must be positive")
         if len(self.stage_rate_gates) != len(GOTOOBJECT_STAGES):
             raise ValueError("one rate gate is required per stage")
+        if self.stage_source not in {"oracle_state", "rgb_template_object_graph"}:
+            raise ValueError("unknown GoToObject stage source")
+
+
+class StageObserver:
+    """Provide reward stages while keeping oracle state audit-only in visual mode."""
+
+    def __init__(self, source: str):
+        if source not in {"oracle_state", "rgb_template_object_graph"}:
+            raise ValueError("unknown GoToObject stage source")
+        self.source = source
+        self.query_count = 0
+        self.cache_hits = 0
+        self.parser_calls = 0
+        self.mismatch_count = 0
+        self.minimum_exact_tile_fraction = 1.0
+        self.mismatch_examples: list[dict[str, object]] = []
+        self.cache: dict[bytes, int] = {}
+        self.templates = (
+            build_tile_templates()
+            if source == "rgb_template_object_graph"
+            else None
+        )
+
+    def stage(self, env: object) -> int:
+        self.query_count += 1
+        oracle_stage = semantic_stage(env)
+        if self.source == "oracle_state":
+            return oracle_stage
+        frame = env.render()
+        if frame is None:
+            raise RuntimeError("RGB stage source requires render_mode='rgb_array'")
+        digest = hashlib.blake2b(frame.tobytes(), digest_size=16).digest()
+        stage = self.cache.get(digest)
+        if stage is None:
+            assert self.templates is not None
+            parsed = parse_object_graph(frame, templates=self.templates)
+            stage = int(parsed["stage"])
+            self.minimum_exact_tile_fraction = min(
+                self.minimum_exact_tile_fraction,
+                float(parsed["exact_tile_fraction"]),
+            )
+            self.cache[digest] = stage
+            self.parser_calls += 1
+        else:
+            self.cache_hits += 1
+        if stage != oracle_stage:
+            self.mismatch_count += 1
+            if len(self.mismatch_examples) < 10:
+                self.mismatch_examples.append(
+                    {
+                        "frame_hash": digest.hex(),
+                        "visual_stage": stage,
+                        "oracle_stage": oracle_stage,
+                    }
+                )
+        return stage
+
+    def state_dict(self) -> dict[str, object]:
+        return {
+            "source": self.source,
+            "query_count": self.query_count,
+            "cache_hits": self.cache_hits,
+            "parser_calls": self.parser_calls,
+            "cache_size": len(self.cache),
+            "mismatch_count": self.mismatch_count,
+            "mismatch_examples": self.mismatch_examples,
+            "minimum_exact_tile_fraction": self.minimum_exact_tile_fraction,
+            "oracle_is_shadow_only": self.source == "rgb_template_object_graph",
+        }
 
 
 def common_layout_seed(seed: int, phase_offset: int, episode: int) -> int:
@@ -317,6 +393,7 @@ def _train_phase(
     q_table: dict[RelationKey, np.ndarray],
     visits: dict[RelationKey, np.ndarray],
     rng: np.random.Generator,
+    stage_observer: StageObserver,
     *,
     episodes: int,
     phase_offset: int,
@@ -342,7 +419,7 @@ def _train_phase(
                 action_index = _training_action(q_values[skill], rng)
             _, _, terminated, truncated, _ = env.step(POLICY_ACTIONS[action_index])
             terminal = bool(terminated or truncated or step + 1 == config.horizon)
-            stage = semantic_stage(env)
+            stage = stage_observer.stage(env)
             reward, parts = reward_model.reward(skill, stage)
             if shadow_model is not None:
                 shadow_model.reward(skill, stage)
@@ -403,7 +480,14 @@ def train_blockwise_run(
 ) -> dict[str, object]:
     output_dir.mkdir(parents=True, exist_ok=False)
     rng = np.random.default_rng(config.seed)
-    env = make_gotoobject()
+    env = make_gotoobject(
+        render_mode=(
+            "rgb_array"
+            if config.stage_source == "rgb_template_object_graph"
+            else None
+        )
+    )
+    stage_observer = StageObserver(config.stage_source)
     online_config = _online_config(config)
     bootstrap_reward = GoToObjectReward(online_config)
     bootstrap_q: dict[RelationKey, np.ndarray] = {}
@@ -424,6 +508,7 @@ def train_blockwise_run(
             bootstrap_q,
             bootstrap_visits,
             rng,
+            stage_observer,
             episodes=config.bootstrap_episodes,
             phase_offset=0,
             replay_buffer=replay_buffer,
@@ -477,6 +562,7 @@ def train_blockwise_run(
                 "bootstrap_q_state_count": len(bootstrap_q),
                 "bootstrap_replay_mode": config.bootstrap_replay,
                 "bootstrap_replay_summary": None,
+                "stage_observer": stage_observer.state_dict(),
                 "policy_phase_ran": False,
                 "checkpoint_stability_passed": False,
                 "signal_gate_passed": False,
@@ -514,6 +600,7 @@ def train_blockwise_run(
             policy_q,
             policy_visits,
             rng,
+            stage_observer,
             episodes=config.policy_episodes,
             phase_offset=500_000,
             shadow_model=shadow_reward,
@@ -580,6 +667,7 @@ def train_blockwise_run(
         "checkpoint_stability_passed": stability,
         "signal_gate_passed": bool(final["specialization_gate_passed"] and stability),
         "policy_rollout_manifest": manifest,
+        "stage_observer": stage_observer.state_dict(),
     }
     (output_dir / "metrics.json").write_text(
         json.dumps(output, indent=2),
@@ -611,6 +699,11 @@ def main() -> None:
         choices=("independent_affine", "balanced_transition"),
         default="independent_affine",
     )
+    parser.add_argument(
+        "--stage-source",
+        choices=("oracle_state", "rgb_template_object_graph"),
+        default="oracle_state",
+    )
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     evaluation_checkpoints = (
@@ -628,6 +721,7 @@ def main() -> None:
         eval_interval=args.eval_interval,
         evaluation_checkpoints=evaluation_checkpoints,
         eval_episodes_per_skill=args.eval_episodes,
+        stage_source=args.stage_source,
     )
     strategy_tag = (
         "_balanced_transition"
@@ -635,8 +729,13 @@ def main() -> None:
         else ""
     )
     replay_tag = "_replay" if config.bootstrap_replay != "none" else ""
+    stage_tag = (
+        "_rgb_object_graph"
+        if config.stage_source == "rgb_template_object_graph"
+        else ""
+    )
     run_id = (
-        f"gotoobject_blockwise_spread{strategy_tag}{replay_tag}_seed{config.seed}_"
+        f"gotoobject_blockwise_spread{strategy_tag}{replay_tag}{stage_tag}_seed{config.seed}_"
         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
     output_dir = args.output_dir or Path(
@@ -659,6 +758,7 @@ def main() -> None:
                     "checkpoint_stability_passed"
                 ],
                 "signal_gate_passed": output["signal_gate_passed"],
+                "stage_observer": output["stage_observer"],
             },
             indent=2,
         )

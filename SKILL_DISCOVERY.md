@@ -2694,7 +2694,7 @@ Artifacts：`outputs/skill_discovery/minigrid_gotoobject_visual/gotoobject_visua
 
 ## Phase 5ZP：RGB Object-graph Online Discovery
 
-状态：`预注册；先跑paired seed 7`
+状态：`paired seed 7完整通过`
 
 - 完全复用Phase 5X seed 7：5,000 bootstrap +15,000 policy episodes、64 horizon、epsilon、semantic-spread counts、balanced-transition assignment、transition predecessor floor、reverse-once bootstrap replay、evaluation checkpoints `3k/6k/9k/13k/14k/15k`与512 layouts/skill。
 - 唯一算法输入变化：bootstrap与policy reward查询的`semantic_stage(env)`替换为Phase 5ZO冻结的`rgb_template_object_graph(env.render())`。Policy仍使用mission-free compact relation key，evaluation仍用oracle stage，只用于最终控制评价。
@@ -2702,6 +2702,29 @@ Artifacts：`outputs/skill_discovery/minigrid_gotoobject_visual/gotoobject_visua
 - Paired semantic source固定为`gotoobject_blockwise_spread_balanced_transition_replay_seed7_20260722_105434`。环境seeds、action RNG和算法配置保持相同，因此额外要求final Q keys/actions逐值一致；若stage mismatch为0但Q不同，先定位非确定性，不用性能结果掩盖。
 - Gate：所有visual reward queries mismatch count为0；bootstrap gate通过且assignment为`[0,2,1]`；13k/14k/15k与独立final的far/adjacent/carried均`>=0.90`；Q-table与paired semantic source exact equal。
 - 若通过，下一大计划才运行seeds 17/29的paired视觉替换；若失败，不改parser、cache或threshold，报告失败来自visual mismatch、runtime nondeterminism还是control gate。
+
+### Phase 5ZP 结果
+
+Run：`gotoobject_blockwise_spread_balanced_transition_replay_rgb_object_graph_seed7_20260722_154000`
+
+- 正式run完成1,280,000次visual reward queries，耗时1,423.48秒。170,578个unique RGB cache misses全部由冻结parser处理，minimum exact-tile fraction为1.0；其余1,109,422次为frame-hash cache hits。
+- Shadow audit的visual/oracle stage mismatch为0，且oracle值从未进入reward、matrix、transition buffer或Q update。
+- Bootstrap top/assigned stages均为`[0,2,1]`。13k/14k/15k三个checkpoint全部通过，独立final far/adjacent/carried为`0.982/0.961/0.936`。
+- 与paired semantic source的config除`stage_source`外完全一致。Saved relation keys、全部Q values和visits逐数组exact equal，max Q absolute difference为0。
+- `paired_semantic_audit.json`的visual signal、recent checkpoint、bootstrap、stage mismatch与Q equality gates全部通过。
+
+> [里程碑]
+> RGB object graph已经从离线metric进入online discovery reward，并在seed 7产生与oracle semantic stage逐步完全相同的学习轨迹。这证明显式视觉关系可以替代该小环境中的state label；它仍是renderer-template upper bound，不等价于学得的通用object representation。
+
+## Phase 5ZQ：RGB Object-graph Multi-seed Paired Replication
+
+状态：`预注册；待seeds 17/29`
+
+- 只补Phase 5X其余training seeds `17/29`，各自复用对应semantic source、5k+15k配置、layout/action RNG、balanced-transition、replay与evaluation checkpoints；唯一变化仍为`stage_source`。
+- 两个runs是CPU renderer/parser任务，不占GPU；按顺序运行，避免并发改变wall-time或系统调度后再误判paired reproducibility。
+- 每seed独立要求：1.28M visual queries mismatch为0、minimum exact-tile fraction 1.0、bootstrap assignment与其semantic source一致、13k/14k/15k及final control gate通过、Q keys/values/visits exact equal。
+- 2/2通过后，合并seed 7标记visual reward bridge为3/3。失败则保留seed 7结果，只定位发生在哪个layout/frame，不改templates或训练超参。
+- Multi-seed通过后停止MiniGrid template实验；下一representation问题是如何用learned detector/patch correspondence恢复同一object graph，而不是继续增加renderer-specific规则。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3111,6 +3134,15 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 解释：DINO carried recall 0.920，说明object disappearance可见；主要缺口是far/adjacent的显式空间关系，不是单纯换更大的global encoder。
 - 限制：模板知道MiniGrid renderer vocabulary，不是通用视觉模型。它只作为object-centric structural upper bound与下一步视觉reward桥接。
 - 下一步：严格paired替换Phase 5X seed-7 reward stage，要求零visual/oracle mismatch和Q-table exact equality后再扩seed。
+
+### D-034：RGB Reward 与 Semantic Reward 在 Seed 7 Exact Equivalent
+
+- 日期：2026-07-22
+- 证据：1.28M online reward queries零stage mismatch；170,578个unique RGB全部exact-template。
+- Control：bootstrap `[0,2,1]`、last-3和final gate通过；final far/adjacent/carried为`0.982/0.961/0.936`。
+- 强核对：relation keys、Q values与visits全部exact equal，max Q difference 0。
+- 限制：这是显式MiniGrid renderer parser，不是learned visual representation。
+- 下一步：固定所有条件补seeds 17/29；3/3后停止template路线，转向learned object graph。
 
 ## 实验日志
 
