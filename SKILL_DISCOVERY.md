@@ -1721,12 +1721,38 @@ Run：`gotoobject_balanced_occupancy_seed7_formal_20260722_080420`
 
 ## Phase 5P：Canonical Assignment Audit
 
-状态：`20k assignment-control 计划已冻结，尚未运行`
+状态：`20k assignment-control 完成；spread通过、semantic未过，coverage-aware结论保留`
 
 - 对Phase 5O两个calibrated matrices按各row最高reward所对应stage重排为同一target order：skill0=carried、skill1=far、skill2=adjacent，即 `[2,0,1]`，与seed-7 balanced oracle一致。
 - 每个discovered row的三个reward数值完全不变；只控制哪一个skill index和训练seed residue负责哪一种stage。
 - 其余保持Phase 5O不变：fresh Q、20k、occupancy、`N^-0.6`、2k/512、last-3，两组并行。
 - 门控仍为independent-final三类各 `>=0.90`且last-3通过。若两者都通过，Phase 5O差异主要来自assignment confound；若只有spread通过，才支持coverage-aware landscape额外有益。该审计后停止tabular shaping sweep并汇总下一算法。
+
+### 20k Canonical-order 结果
+
+| Source matrix | Far | Adjacent | Carried | Last-3 | Gate |
+| --- | ---: | ---: | ---: | :---: | :---: |
+| Semantic canonical | 0.988 | 1.000 | 0.869 | fail | fail |
+| Spread canonical | 0.998 | 0.998 | 0.979 | pass | pass |
+
+- Runs：`gotoobject_canonical_calibrated_semantic_seed7_diagnostic_20260722_092926`与`gotoobject_canonical_calibrated_spread_seed7_diagnostic_20260722_092941`。
+- 两组都使用相同row order `[carried, far, adjacent]`；skill index和训练seed-residue confound已控制，spread仍通过而semantic仍失败。
+- Spread fixed-eval last-3 carried为 `0.951/0.951/0.959`，三次均过门；independent final carried为 `0.979`。
+- 两个carried rows都满足far=0、carried=1；关键差别是必经的adjacent reward。Semantic为 `-3.963`，spread仅 `-0.450`。Plain semantic强烈惩罚pickup的前置阶段，spread保留可穿越的组合路径。
+- 代表轨迹真实pickup蓝色key，floor objects `2->1`、`carrying=[key, blue]`；far和adjacent轨迹也与定义一致。
+
+![Canonical calibrated spread 20k audit](outputs/skill_discovery/minigrid_gotoobject_training/gotoobject_canonical_calibrated_spread_seed7_diagnostic_20260722_092941/policy_rollout_audit.png)
+
+> [里程碑]
+> 小图形环境已经给出核心方法结论：skill discovery不只需要state coverage，还需要对稀有stage的coverage pressure、可训练的reward calibration，以及不惩罚组合技能必经前置阶段的landscape。Exact-terminal、plain online semantic和naive constant-step均有可复现失败证据；canonical calibrated spread在seed 7的20k gate通过。
+
+## Phase 5Q：Block-wise Calibrated Spread
+
+状态：`下一算法设计中，尚未冻结或运行`
+
+- 目标是把Phase 5P的post-hoc成功结构变成online algorithm：discriminator/count update与policy update采用block-wise freeze或EM-style两时间尺度，而不是每步共同漂移。
+- 正式计划必须同时解决training layout公平性：同一个三skill cycle使用common-random-number layout，避免skill index绑定不同seed residue。
+- 下一次运行前需要冻结：bootstrap block、matrix snapshot频率、row calibration、assignment collision处理、是否重置/继承Q以及20k pass/fail gate。未冻结前不继续tabular reward-shaping sweep。
 
 ## Phase 6：迁移到 Hammer
 
