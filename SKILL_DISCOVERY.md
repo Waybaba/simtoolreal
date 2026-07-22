@@ -1862,6 +1862,18 @@ Run：`gotoobject_adaptive_deficit_seed7_20260722_100935`
 > [方向变化]
 > 停止adaptive environment sampling：raw与rank两个内部training signals都不能稳定代理held-out compositional difficulty，而且会牺牲CRN layout diversity。回到Phase 5Q固定round-robin schedule；下一效率方向优先考虑对bootstrap transitions做frozen-reward relabel/replay，让5k discovery数据在matrix冻结后继续有用，而不是把它们连同旧Q一起完全丢弃。
 
+## Phase 5T：Bootstrap Frozen-reward Relabel Replay
+
+状态：`integrated 20k计划已冻结，尚未运行`
+
+- 完整算法仍为5k online semantic-spread discovery加15k frozen-policy，共20k environment episodes。Bootstrap、CRN layout seeds、matrix permutation gate、runner-up/top calibration、policy epsilon和所有评估设置与Phase 5Q完全相同。
+- Bootstrap期间额外记录每个transition的skill、compact relation key、action、post-step discovered stage、next key和terminal flag，并保留episode boundaries。记录不改变online reward、Q update或action选择。
+- Bootstrap gate通过后仍丢弃online Q与visits。Fresh frozen-policy Q先对bootstrap buffer做恰好一次offline relabel replay：episodes保持原采集顺序，每条episode内部按时间反向更新；reward由冻结后的calibrated matrix重新计算，terminal与bootstrap TD rule相同。
+- Replay使用同一个`N^-0.6` visit update，replay visits与Q随后直接带入15k online policy phase。反向时序让后继state在同一trajectory中先更新，但不做第二个sweep、不采样新action、也不增加environment interaction。
+- Policy phase恢复Phase 5Q固定round-robin：每个三skill cycle共享layout，共5000 unique policy layouts；不使用Phase 5R/5S scheduler。与Phase 5Q相比，唯一算法变量是冻结reward下对5k bootstrap experience的一次relabel reuse。
+- 保存压缩transition buffer、replay transition/episode counts、replay后policy前Q与visits、bootstrap/frozen/shadow matrices、15k训练Q、5个checkpoints、final、SVG、PNG和manifest。
+- Pass gate仍为independent-final far/adjacent/carried各 `>=0.90`且last-3 checkpoints全部通过。预注册预测是carried高于Phase 5Q的0.867；若仍失败，不增加replay sweeps，转而判断固定20k总预算是否需要更强的function approximation或显式增加policy data。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
