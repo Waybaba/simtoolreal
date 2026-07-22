@@ -2739,7 +2739,7 @@ Run：`gotoobject_blockwise_spread_balanced_transition_replay_rgb_object_graph_s
 
 ## Phase 5ZR：Public Pusher-v5 Environment Gate
 
-状态：`预注册；未安装MuJoCo extra，未运行`
+状态：`完成；state/reward/RGB可用，bitwise RGB reproducibility失败，停止Pusher路线`
 
 ### 目的与边界
 
@@ -2767,6 +2767,21 @@ Run：`gotoobject_blockwise_spread_balanced_transition_replay_rgb_object_graph_s
 
 > [大计划]
 > 先做约一分钟的版本/reset/render smoke；通过后运行五种子双实例replay并保存JSON和联系表。任何训练与learned representation都排在environment gate和下一轮oracle reachability gate之后。
+
+### Phase 5ZR 结果
+
+Run：`outputs/skill_discovery/pusher_v5_environment/environment_audit_20260722_162104`
+
+- 依赖安装在data env：Gymnasium `1.3.0`、MuJoCo `3.10.0`、Python `3.11.15`；`MUJOCO_GL=egl`、物理GPU 0。官方23维observation、7维`[-2,2]` action与100-step TimeLimit全部符合协议。
+- 五个seeds、每seed两个新实例的全部100步observations、rewards、reward terms与termination flags逐值exact equal。Reward三项独立重算最大误差为0，observation末9维与三组body COM最大误差为0，五个reset object-goal planar distances均大于0.17 m。
+- 1,010次审计render全部为`256x256x3 uint8`，minimum pixel standard deviation为32.55；每条trajectory有多个frame hashes。Reset/mid/final联系表确认五行都能看清机械臂、红色object、白色goal与桌面，动作变化可见。
+- **预注册reproducibility gate失败**：physics完全相同，但五个seeds的RGB frame hashes都不是全程exact equal。每个seed的101帧中分别有`9/12/55/10/14`帧不同，不同channel values为`45/79/261/50/70`；所有pixel差异最大仅`1/255`。这是EGL rasterization的低位非确定性，但协议要求bitwise frame equality，因此不能事后改成容差gate。
+- Final gate为fail；不启动Phase 5ZS oracle controller、Pusher视觉dataset或训练。联系表仍保留为“环境可运行且画面可读”的证据，不能标成Pusher路线通过。
+
+![Pusher-v5 reset, middle, and final frame audit](outputs/skill_discovery/pusher_v5_environment/environment_audit_20260722_162104/pusher_v5_reset_mid_final.png)
+
+> [里程碑]
+> 官方Pusher-v5的physics、reward与state接口严格稳定，RGB也清晰，但同状态EGL画面存在最多1/255的bitwise差异。这个差异实际很小，却违反冻结gate；因此本阶段保留失败并停止Pusher训练。下一小环境应优先选择无需native 3D rasterizer的公开2D continuous-control环境，把representation问题和renderer determinism分开。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3193,6 +3208,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 结果：representation equivalence为3/3；预注册strict temporal control只有1/3，因为seed 17的13k carried与seed 29的14k adjacent低于0.90。
 - 解释：视觉object graph没有改变任何训练结果，既精确继承成功，也精确继承Phase 5X已有的不稳定。不能用三个final checkpoint均通过替换预注册的last-3 gate。
 - 决定：关闭MiniGrid renderer-template分支；下一阶段转入公开`Pusher-v5`的环境/API/渲染门禁，再决定learned object relation metric。首轮不训练、不改reward，失败时不回头扫描MiniGrid模板。
+
+### D-036：Pusher State Exact，EGL RGB 非 Bitwise Exact
+
+- 日期：2026-07-22
+- 证据：五种子双实例、每实例100步；observations/rewards/flags全部exact equal，reward与COM重算误差0，联系表人工通过。
+- 失败：五个seed的RGB exact-hash gate全部失败；最大pixel差仅1/255，但预注册要求bitwise equality，不能在结果后放宽。
+- 决定：Pusher-v5 environment gate记为失败，不做oracle reachability、dataset、metric或policy training。下一候选应为公开、简单、2D continuous-control环境，并在任何run前冻结语义stage与渲染gate。
 
 ## 实验日志
 
