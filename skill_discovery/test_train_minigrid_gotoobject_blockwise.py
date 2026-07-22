@@ -13,6 +13,7 @@ from skill_discovery.train_minigrid_gotoobject_blockwise import (
     _is_evaluation_checkpoint,
     _replay_frozen_transitions,
     common_layout_seed,
+    resolve_bootstrap_matrix,
     snapshot_spread_matrix,
     train_blockwise_run,
 )
@@ -109,6 +110,44 @@ class BlockwiseSpreadTrainerTest(unittest.TestCase):
         self.assertAlmostEqual(q_table[second][0, 1], 1.0)
         self.assertAlmostEqual(q_table[first][0, 0], 0.99)
 
+    def test_balanced_transition_resolution_repairs_collision(self) -> None:
+        config = BlockwiseSpreadConfig(
+            bootstrap_episodes=3,
+            policy_episodes=3,
+            eval_interval=1,
+            matrix_strategy="balanced_transition",
+        )
+        reward_config = GoToObjectTrainConfig(
+            objective="semantic_spread",
+            reward_timing="occupancy",
+            episodes=3,
+            eval_interval=1,
+        )
+        reward_model = GoToObjectReward(reward_config)
+        raw_matrix = (
+            (0.21, -2.67, 0.54),
+            (-1.45, 0.43, 0.64),
+            (0.04, 0.38, -3.94),
+        )
+        key = (1, 1, 0, 2, 2, 3, 3, 0)
+        replay_buffer = [
+            [(key, 0, 0, stage, key, False) for stage in [0, 1] * 30],
+            [(key, 1, 0, stage, key, False) for stage in [1, 2] * 30],
+        ]
+        resolution = resolve_bootstrap_matrix(
+            raw_matrix,
+            reward_model,
+            config,
+            replay_buffer,
+        )
+        self.assertTrue(resolution["gate_passed"])
+        self.assertEqual(resolution["independent_top_stages"], (2, 2, 1))
+        self.assertEqual(resolution["assigned_stages"], (0, 2, 1))
+        self.assertEqual(
+            resolution["matrix"],
+            ((1.0, 0.0, -1.0), (-1.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+        )
+
     def test_tiny_run_preserves_bootstrap_artifacts(self) -> None:
         config = BlockwiseSpreadConfig(
             seed=109,
@@ -125,6 +164,7 @@ class BlockwiseSpreadTrainerTest(unittest.TestCase):
             output = train_blockwise_run(config, output_dir)
             self.assertIn("bootstrap_gate_passed", output)
             self.assertEqual(len(output["bootstrap_top_stages"]), 3)
+            self.assertEqual(len(output["bootstrap_assigned_stages"]), 3)
             self.assertTrue((output_dir / "metrics.json").exists())
             self.assertTrue((output_dir / "bootstrap_q_table.npz").exists())
             self.assertTrue((output_dir / "bootstrap_replay_buffer.npz").exists())

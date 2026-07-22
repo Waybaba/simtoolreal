@@ -1989,6 +1989,18 @@ Artifact：`gotoobject_balanced_transition_audit_7_17_29_20260722.json`
 > [里程碑]
 > 两个multi-seed失败结构都能由同一条无语义名称的规则解决：discovered clusters做global balanced matching，observed transition graph保护通往target的直接前驱。该audit没有证明policy会通过；下一步用完全相同的training seeds `7/17/29` 做integrated replication，禁止换seed或增加20k预算。
 
+## Phase 5X：Balanced-transition Integrated Replication
+
+状态：`3-seed formal计划已冻结，尚未运行`
+
+- Training seeds仍为 `7/17/29`。每个seed先运行与Phase 5V完全相同的5k online semantic-spread bootstrap并记录transition buffer。
+- 5k边界不再使用independent row argmax permutation gate；改用Phase 5W冻结规则：raw 3x3 matrix做maximum-weight one-to-one assignment，buffer按25-count/1%-share门槛提取target direct predecessors，并构造target=1、predecessor=0、other=-1的matrix。
+- Structural bootstrap gate要求finite global permutation且三个targets都有受支持predecessor；若失败则该seed停止。规则不读取stage names，只有报告层把indices映射为far/adjacent/carried。
+- Gate通过后丢弃online Q/visits，对同一5k buffer按新matrix做恰好一次reverse relabel replay，再运行15k fixed-round-robin CRN policy。总environment budget、epsilon、`N^-0.6`、horizon和evaluation seeds均不变。
+- Checkpoints仍精确为 `3k/6k/9k/13k/14k/15k`；last-3为post-anneal 13k/14k/15k。每seed需要independent-final三类各 `>=0.90`且last-3全部通过；method gate要求3/3 seeds通过。
+- 保存raw matrix、independent tops、balanced assignment/permutation scores、transition counts/predecessors、transition-aware matrix、buffer/replay Q、training Q、checkpoints、final和rollout audit。人工核对所有completed seeds的carried真实pickup。
+- 若失败，不改transition threshold、matrix values、replay sweeps或seed set。若3/3通过，停止GoToObject tabular算法搜索，汇总后进入更接近视觉/连续控制的下一环境；通过不等于直接宣称Hammer已解决。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`

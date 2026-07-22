@@ -34,6 +34,21 @@ def maximum_weight_assignment(
     return tuple(best["assignment"]), scores
 
 
+def transition_counts_from_stage_episodes(
+    episodes: list[list[int]],
+) -> np.ndarray:
+    counts = np.zeros((3, 3), dtype=np.int64)
+    for episode in episodes:
+        for source, target in zip(episode[:-1], episode[1:]):
+            if source < 0 or source >= len(GOTOOBJECT_STAGES):
+                raise ValueError("episode contains an invalid source stage")
+            if target < 0 or target >= len(GOTOOBJECT_STAGES):
+                raise ValueError("episode contains an invalid target stage")
+            if source != target:
+                counts[source, target] += 1
+    return counts
+
+
 def transition_counts_from_buffer(path: Path) -> np.ndarray:
     with np.load(path) as archive:
         offsets = np.asarray(archive["episode_offsets"], dtype=np.int64)
@@ -44,13 +59,11 @@ def transition_counts_from_buffer(path: Path) -> np.ndarray:
         raise ValueError("episode offsets do not match non-empty transitions")
     if np.any(stages < 0) or np.any(stages >= len(GOTOOBJECT_STAGES)):
         raise ValueError("buffer contains an invalid stage")
-    counts = np.zeros((3, 3), dtype=np.int64)
-    for start, stop in zip(offsets[:-1], offsets[1:]):
-        episode = stages[start:stop]
-        for source, target in zip(episode[:-1], episode[1:]):
-            if source != target:
-                counts[source, target] += 1
-    return counts
+    episodes = [
+        stages[start:stop].tolist()
+        for start, stop in zip(offsets[:-1], offsets[1:])
+    ]
+    return transition_counts_from_stage_episodes(episodes)
 
 
 def supported_predecessors(

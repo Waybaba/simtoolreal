@@ -11,6 +11,12 @@ from pathlib import Path
 
 import numpy as np
 
+from skill_discovery.audit_gotoobject_balanced_transition import (
+    maximum_weight_assignment,
+    supported_predecessors,
+    transition_aware_matrix,
+    transition_counts_from_stage_episodes,
+)
 from skill_discovery.minigrid_gotoobject import (
     GOTOOBJECT_STAGES,
     make_gotoobject,
@@ -50,6 +56,7 @@ class BlockwiseSpreadConfig:
     pseudocount: float = 2.0
     semantic_decay: float = 0.9995
     semantic_coverage_weight: float = 1.0
+    matrix_strategy: str = "independent_affine"
     bootstrap_replay: str = "none"
     eval_interval: int = 3_000
     evaluation_checkpoints: tuple[int, ...] | None = None
@@ -80,6 +87,11 @@ class BlockwiseSpreadConfig:
             raise ValueError("epsilon decay fraction must be in (0, 1]")
         if self.bootstrap_replay not in {"none", "reverse_once"}:
             raise ValueError("unknown bootstrap replay mode")
+        if self.matrix_strategy not in {
+            "independent_affine",
+            "balanced_transition",
+        }:
+            raise ValueError("unknown matrix strategy")
         if self.stability_checkpoints <= 0:
             raise ValueError("stability checkpoints must be positive")
         if len(self.stage_rate_gates) != len(GOTOOBJECT_STAGES):
@@ -141,6 +153,56 @@ def snapshot_spread_matrix(
     return frozen_reward_matrix_from_metrics(metrics, calibration=calibration)
 
 
+def resolve_bootstrap_matrix(
+    raw_matrix: tuple[tuple[float, ...], ...],
+    reward_model: GoToObjectReward,
+    config: BlockwiseSpreadConfig,
+    replay_buffer: ReplayBuffer | None,
+) -> dict[str, object]:
+    independent_tops = tuple(
+        int(value) for value in np.argmax(np.asarray(raw_matrix), axis=1)
+    )
+    if config.matrix_strategy == "independent_affine":
+        gate = sorted(independent_tops) == list(range(config.num_skills))
+        matrix = (
+            snapshot_spread_matrix(
+                reward_model,
+                config,
+                calibration="runner_up_unit",
+            )
+            if gate
+            else None
+        )
+        return {
+            "gate_passed": gate,
+            "independent_top_stages": independent_tops,
+            "assigned_stages": independent_tops,
+            "permutation_scores": None,
+            "transition_counts": None,
+            "supported_predecessors": None,
+            "matrix": matrix,
+        }
+
+    if replay_buffer is None:
+        raise ValueError("balanced transition strategy requires a replay buffer")
+    assignment, scores = maximum_weight_assignment(np.asarray(raw_matrix))
+    transition_counts = transition_counts_from_stage_episodes(
+        [[transition[3] for transition in episode] for episode in replay_buffer]
+    )
+    predecessors = supported_predecessors(transition_counts)
+    gate = bool(all(predecessors))
+    matrix = transition_aware_matrix(assignment, predecessors) if gate else None
+    return {
+        "gate_passed": gate,
+        "independent_top_stages": independent_tops,
+        "assigned_stages": assignment,
+        "permutation_scores": scores,
+        "transition_counts": transition_counts.tolist(),
+        "supported_predecessors": predecessors,
+        "matrix": matrix,
+    }
+
+
 def _policy_config(
     config: BlockwiseSpreadConfig,
     matrix: tuple[tuple[float, ...], ...],
@@ -148,8 +210,12 @@ def _policy_config(
     return GoToObjectTrainConfig(
         objective="frozen_matrix",
         frozen_reward_matrix=matrix,
-        frozen_reward_source="phase5q_bootstrap_snapshot",
-        frozen_reward_calibration="runner_up_unit",
+        frozen_reward_source=f"bootstrap_{config.matrix_strategy}",
+        frozen_reward_calibration=(
+            "runner_up_unit"
+            if config.matrix_strategy == "independent_affine"
+            else "none"
+        ),
         reward_timing="occupancy",
         seed=config.seed,
         episodes=config.policy_episodes,
@@ -343,7 +409,10 @@ def train_blockwise_run(
     bootstrap_q: dict[RelationKey, np.ndarray] = {}
     bootstrap_visits: dict[RelationKey, np.ndarray] = {}
     replay_buffer: ReplayBuffer | None = (
-        [] if config.bootstrap_replay == "reverse_once" else None
+        []
+        if config.bootstrap_replay == "reverse_once"
+        or config.matrix_strategy == "balanced_transition"
+        else None
     )
     started = time.monotonic()
     try:
@@ -364,17 +433,16 @@ def train_blockwise_run(
             config,
             calibration="none",
         )
-        top_stages = np.argmax(np.asarray(raw_matrix), axis=1).astype(int).tolist()
-        bootstrap_gate = sorted(top_stages) == list(range(config.num_skills))
-        calibrated_matrix = (
-            snapshot_spread_matrix(
-                bootstrap_reward,
-                config,
-                calibration="runner_up_unit",
-            )
-            if bootstrap_gate
-            else None
+        resolution = resolve_bootstrap_matrix(
+            raw_matrix,
+            bootstrap_reward,
+            config,
+            replay_buffer,
         )
+        top_stages = list(resolution["independent_top_stages"])
+        assigned_stages = list(resolution["assigned_stages"])
+        bootstrap_gate = bool(resolution["gate_passed"])
+        calibrated_matrix = resolution["matrix"]
         _save_q_table(
             output_dir / "bootstrap_q_table.npz",
             bootstrap_q,
@@ -392,8 +460,17 @@ def train_blockwise_run(
                 "elapsed_seconds": elapsed,
                 "bootstrap_gate_passed": False,
                 "bootstrap_top_stages": top_stages,
+                "bootstrap_assigned_stages": assigned_stages,
                 "bootstrap_raw_matrix": raw_matrix,
                 "bootstrap_calibrated_matrix": None,
+                "bootstrap_matrix_strategy": config.matrix_strategy,
+                "bootstrap_permutation_scores": resolution[
+                    "permutation_scores"
+                ],
+                "bootstrap_transition_counts": resolution["transition_counts"],
+                "bootstrap_supported_predecessors": resolution[
+                    "supported_predecessors"
+                ],
                 "bootstrap_reward_model": bootstrap_reward.state_dict(),
                 "bootstrap_terminal_counts": bootstrap_counts.tolist(),
                 "bootstrap_reward_sums": bootstrap_reward_sums,
@@ -472,8 +549,15 @@ def train_blockwise_run(
         "training_layout_seed_mode": "common_per_three_skill_cycle",
         "bootstrap_gate_passed": True,
         "bootstrap_top_stages": top_stages,
+        "bootstrap_assigned_stages": assigned_stages,
         "bootstrap_raw_matrix": raw_matrix,
         "bootstrap_calibrated_matrix": calibrated_matrix,
+        "bootstrap_matrix_strategy": config.matrix_strategy,
+        "bootstrap_permutation_scores": resolution["permutation_scores"],
+        "bootstrap_transition_counts": resolution["transition_counts"],
+        "bootstrap_supported_predecessors": resolution[
+            "supported_predecessors"
+        ],
         "bootstrap_reward_model": bootstrap_reward.state_dict(),
         "bootstrap_terminal_counts": bootstrap_counts.tolist(),
         "bootstrap_reward_sums": bootstrap_reward_sums,
@@ -522,6 +606,11 @@ def main() -> None:
         choices=("none", "reverse_once"),
         default="none",
     )
+    parser.add_argument(
+        "--matrix-strategy",
+        choices=("independent_affine", "balanced_transition"),
+        default="independent_affine",
+    )
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     evaluation_checkpoints = (
@@ -534,14 +623,20 @@ def main() -> None:
         bootstrap_episodes=args.bootstrap_episodes,
         policy_episodes=args.policy_episodes,
         horizon=args.horizon,
+        matrix_strategy=args.matrix_strategy,
         bootstrap_replay=args.bootstrap_replay,
         eval_interval=args.eval_interval,
         evaluation_checkpoints=evaluation_checkpoints,
         eval_episodes_per_skill=args.eval_episodes,
     )
+    strategy_tag = (
+        "_balanced_transition"
+        if config.matrix_strategy == "balanced_transition"
+        else ""
+    )
     replay_tag = "_replay" if config.bootstrap_replay != "none" else ""
     run_id = (
-        f"gotoobject_blockwise_spread{replay_tag}_seed{config.seed}_"
+        f"gotoobject_blockwise_spread{strategy_tag}{replay_tag}_seed{config.seed}_"
         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
     output_dir = args.output_dir or Path(
@@ -555,6 +650,9 @@ def main() -> None:
                 "elapsed_seconds": output["elapsed_seconds"],
                 "bootstrap_gate_passed": output["bootstrap_gate_passed"],
                 "bootstrap_top_stages": output["bootstrap_top_stages"],
+                "bootstrap_assigned_stages": output[
+                    "bootstrap_assigned_stages"
+                ],
                 "policy_phase_ran": output["policy_phase_ran"],
                 "final_evaluation": output.get("final_evaluation"),
                 "checkpoint_stability_passed": output[
