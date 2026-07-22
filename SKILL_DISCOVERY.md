@@ -2300,7 +2300,7 @@ Run：`doorkey5_masked_ppo_control_seed7_20260722_122433`
 
 ## Phase 5ZG：DoorKey Foundation-visual Semantic Metric
 
-状态：`离线metric协议已冻结，尚未生成数据`
+状态：`balanced RGB + DINO K=4完成；foundation-visual gate通过`
 
 - 停止扩展control后回到核心假设：5x5 tabular discovery的stage metric目前是oracle，下一步先检验冻结foundation vision embedding能否在官方DoorKey RGB中无标签区分navigation/key/door/goal四个语义阶段。
 - 使用official scripted solver只生成balanced offline audit data，不进入policy training。Train generation groups为seeds `7/17/27`，audit groups为`37/47`；每group 128个独立layout seeds，每个layout保存reset、key acquired、door opened、native goal四张 `160x160` RGB，共640 trajectories/2560 frames。
@@ -2309,6 +2309,32 @@ Run：`doorkey5_masked_ppo_control_seed7_20260722_122433`
 - 每种representation只在train split无标签fit KMeans `K=4`、seed 7、n-init 32；train stage labels只在fit完成后求cluster permutation，audit labels只用于最终accuracy/recall/NMI，不调整centers或选择样本。
 - Foundation-visual gate要求至少一个DINO representation在audit上aligned accuracy `>=0.85`、四stage recalls各 `>=0.75`、NMI `>=0.65`、train/audit四clusters均非空；contact sheet需人工通过。不要求DINO击败raw pixels，因为MiniGrid renderer的颜色规则本身可能让raw baseline很强。
 - 若通过，下一大计划才设计有限state visual-embedding cache，把冻结cluster identity替换5x5 online discovery的oracle stage；若失败，先记录是哪个stage混淆，不调K、encoder、prompt或style augmentation。
+
+### Offline Visual Metric 结果
+
+- Dataset：`doorkey5_visual_dataset_20260722_123616`
+- DINO cache：`doorkey5_dinov2_20260722_123800`
+- Final cluster audit：`doorkey5_visual_clusters_groupaudit_20260722_124100`
+
+640条trajectories/2560 frames全部native success，train groups `7/17/27`与audit groups `37/47`严格分离。DINOv2-small在GPU0完成冻结前向只用7.6秒，frame embedding shape为 `640x4x384`。
+
+| Representation | Audit accuracy | Nav recall | Key recall | Door recall | Goal recall | NMI | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| Raw current | 0.809 | 0.770 | 0.465 | 1.000 | 1.000 | 0.768 | fail |
+| Raw temporal delta | 0.847 | 1.000 | 0.387 | 1.000 | 1.000 | 0.837 | fail |
+| DINO temporal delta | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| DINO start+current | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| DINO current | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+
+- 预注册优先级选择 `dinov2_temporal_delta`，不是看完audit后取最大值。Audit groups 37与47分别检查，三个DINO representations在两组内的accuracy和四class recalls也全部1.000。
+- Raw methods稳定识别door/goal，却把大量key frames并入其他cluster；group 37/47的raw-current key recall为0.500/0.430，raw-delta为0.414/0.359。DINO优势集中在“key从地面消失并被携带”这个小interaction变化，而不是只识别显眼goal颜色。
+- 人工contact sheet六行全部按reset/key/door/goal顺序：第二列key真实消失、第三列door真实open、第四列agent进入green goal；train/audit画面都正常。
+- 结论边界：clean MiniGrid中DINO current也为1.0，因此本结果证明foundation表示包含四阶段语义，但不能单独证明temporal delta必要，也没有证明online reward可训练。Style/scale robustness仍沿用FrozenLake已记录的失败边界。
+
+![DoorKey foundation visual stage audit](outputs/skill_discovery/minigrid_doorkey_visual/doorkey5_visual_dataset_20260722_123616/manual_stage_audit.png)
+
+> [里程碑]
+> DoorKey第一次把oracle semantic stage向foundation visual metric推进：冻结DINO、无标签K=4、held-out layout groups上四类完整分离，尤其修复raw pixel methods对key interaction的系统性漏检。下一步可以设计finite-state embedding cache，但必须继续把cluster label alignment与online policy training隔离。
 
 ## Phase 6：迁移到 Hammer
 
