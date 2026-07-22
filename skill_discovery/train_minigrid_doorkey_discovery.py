@@ -9,6 +9,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Protocol
 
 import gymnasium as gym
 import minigrid  # noqa: F401
@@ -47,6 +48,19 @@ ReplayTransition = tuple[
     bool,
 ]
 ReplayBuffer = list[list[ReplayTransition]]
+
+
+class TrainingStageTracker(Protocol):
+    def observe(
+        self,
+        env: gym.Env,
+        *,
+        terminated: bool = False,
+        reward: float = 0.0,
+    ) -> int: ...
+
+
+TrainingStageTrackerFactory = Callable[[], TrainingStageTracker]
 
 
 @dataclass(frozen=True)
@@ -180,6 +194,21 @@ def _epsilon(
 
 def _step_size(visits: float) -> float:
     return float(visits**-0.6)
+
+
+def _training_stage(
+    env: gym.Env,
+    tracker: TrainingStageTracker | None,
+    *,
+    terminated: bool = False,
+    reward: float = 0.0,
+) -> int:
+    if tracker is None:
+        return semantic_stage(env, terminated=terminated, reward=reward)
+    stage = int(tracker.observe(env, terminated=terminated, reward=reward))
+    if stage < 0 or stage >= len(DOORKEY_STAGES):
+        raise ValueError("training stage tracker returned an invalid stage")
+    return stage
 
 
 def _save_replay_buffer(path: Path, replay_buffer: ReplayBuffer) -> None:
@@ -332,13 +361,17 @@ def _train_bootstrap(
     visits: dict[DoorKeyState, np.ndarray],
     rng: np.random.Generator,
     replay_buffer: ReplayBuffer,
+    stage_tracker_factory: TrainingStageTrackerFactory | None = None,
 ) -> tuple[np.ndarray, dict[str, float]]:
     terminal_counts = np.zeros((4, 4), dtype=np.int64)
     reward_sums = {"diayn_reward": 0.0, "coverage_reward": 0.0}
     for episode in range(config.bootstrap_episodes):
         skill = episode % config.num_skills
         env.reset(seed=common_layout_seed(config.seed, 0, episode))
-        furthest_stage = semantic_stage(env)
+        stage_tracker = (
+            stage_tracker_factory() if stage_tracker_factory is not None else None
+        )
+        furthest_stage = _training_stage(env, stage_tracker)
         epsilon = _epsilon(config, episode, config.bootstrap_episodes)
         replay_episode = []
         for step in range(config.horizon):
@@ -357,8 +390,9 @@ def _train_bootstrap(
             _, native_reward, terminated, truncated, _ = env.step(
                 DOORKEY_POLICY_ACTIONS[action_index]
             )
-            stage = semantic_stage(
+            stage = _training_stage(
                 env,
+                stage_tracker,
                 terminated=bool(terminated),
                 reward=float(native_reward),
             )
@@ -408,6 +442,7 @@ def _train_policy(
     q_table: dict[DoorKeyState, np.ndarray],
     visits: dict[DoorKeyState, np.ndarray],
     rng: np.random.Generator,
+    stage_tracker_factory: TrainingStageTrackerFactory | None = None,
 ) -> tuple[np.ndarray, list[dict[str, object]]]:
     terminal_counts = np.zeros((4, 4), dtype=np.int64)
     evaluations = []
@@ -415,7 +450,10 @@ def _train_policy(
         skill = episode % config.num_skills
         target_stage = policy_config.target_assignment[skill]
         env.reset(seed=common_layout_seed(config.seed, 500_000, episode))
-        furthest_stage = semantic_stage(env)
+        stage_tracker = (
+            stage_tracker_factory() if stage_tracker_factory is not None else None
+        )
+        furthest_stage = _training_stage(env, stage_tracker)
         epsilon = _epsilon(config, episode, config.policy_episodes)
         for step in range(config.horizon):
             key = compact_doorkey_state(env)
@@ -433,8 +471,9 @@ def _train_policy(
             _, native_reward, terminated, truncated, _ = env.step(
                 DOORKEY_POLICY_ACTIONS[action_index]
             )
-            stage = semantic_stage(
+            stage = _training_stage(
                 env,
+                stage_tracker,
                 terminated=bool(terminated),
                 reward=float(native_reward),
             )
@@ -510,10 +549,14 @@ def _policy_config(
 def train_discovery_run(
     config: DoorKeyDiscoveryConfig,
     output_dir: Path,
+    *,
+    stage_tracker_factory: TrainingStageTrackerFactory | None = None,
+    render_mode: str | None = None,
+    training_stage_metric_summary: Callable[[], dict[str, object]] | None = None,
 ) -> dict[str, object]:
     output_dir.mkdir(parents=True, exist_ok=False)
     rng = np.random.default_rng(config.seed)
-    env = gym.make(config.env_id)
+    env = gym.make(config.env_id, render_mode=render_mode)
     bootstrap_reward = DoorKeySpreadReward(config)
     bootstrap_q: dict[DoorKeyState, np.ndarray] = {}
     bootstrap_visits: dict[DoorKeyState, np.ndarray] = {}
@@ -528,6 +571,7 @@ def train_discovery_run(
             bootstrap_visits,
             rng,
             replay_buffer,
+            stage_tracker_factory,
         )
         raw_matrix = bootstrap_reward.raw_matrix()
         resolution = resolve_bootstrap(raw_matrix, replay_buffer, config)
@@ -569,6 +613,9 @@ def train_discovery_run(
             "bootstrap_reward_sums": bootstrap_reward_sums,
             "bootstrap_q_state_count": len(bootstrap_q),
             "bootstrap_replay_episodes": len(replay_buffer),
+            "training_stage_metric": training_stage_metric_summary()
+            if training_stage_metric_summary is not None
+            else {"name": "oracle_semantic_stage"},
         }
         if not resolution["gate_passed"]:
             output = {
@@ -608,6 +655,7 @@ def train_discovery_run(
             policy_q,
             policy_visits,
             rng,
+            stage_tracker_factory,
         )
     finally:
         env.close()
@@ -643,6 +691,9 @@ def train_discovery_run(
         "checkpoint_stability_passed": stability,
         "signal_gate_passed": bool(final["specialization_gate_passed"] and stability),
         "policy_rollout_manifest": manifest,
+        "training_stage_metric": training_stage_metric_summary()
+        if training_stage_metric_summary is not None
+        else {"name": "oracle_semantic_stage"},
     }
     (output_dir / "metrics.json").write_text(
         json.dumps(output, indent=2),
