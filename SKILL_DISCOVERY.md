@@ -5,7 +5,7 @@
 >
 > 当前阶段：Phase 3 fixed-layout gate 已通过但 layout generalization 失败；Phase 4A 官方 MiniGrid 环境审计已通过，Phase 4B 正在定位长时序 PPO 的部署失败。
 >
-> 当前动作：Phase 4D slippery public gate 完成：Plain Semantic 4/5 seeds 通过，Raw 与 spread seed 7 失败。下一步进入 Phase 5A，只做缓存图像/短轨迹的离线 visual representation probe，不在线调用 VLM 或返回 Hammer。
+> 当前动作：Phase 5A DINOv2-small visual gate 已通过，1-NN/triplet 0.837，明显高于 raw 0.371；embeddings 已缓存。下一步 Phase 5B 先做无标签 K=3 clustering audit，不直接把 outcome labels 注入 reward。
 
 ## 一眼看完整流程
 
@@ -1041,6 +1041,96 @@ VLM 只离线编码关键帧或短 clip，并缓存 embedding，不放在每个 
 
 Phase 5A 第一 gate：平衡 RGB dataset、manifest 与 30 条随机视觉抽样一致；raw pixels/random projection/oracle 的离线结果可复现。完成后再选择一个公开 pretrained visual encoder，不同时比较多个大模型。
 
+### Phase 5A Cached RGB Dataset 结果：通过
+
+Run：`frozenlake_visual_dataset_20260722_0730`
+
+- 1,920 trajectories：5 generation seeds x 3 outcomes x 128；safe/hole/goal 各 640。
+- Train seeds `7/17/27` 共 1152，audit seeds `37/47` 共 768；每个 split 内三类完全平衡且 seeds 不重叠。
+- 缓存三帧 `start/middle/final`，每帧 64x64 RGB；完整 state/action/length/native reward 同步保存，压缩文件约 3 MB。
+- Sanity：safe length 恒 32；hole terminal states 只为 `5/7/11/12`；goal terminal 只为 15 且 native reward mean 1.0。
+- 30 条 triptych 视觉抽样人工检查通过，六行依次为 safe、hole、goal 各两行。
+
+![FrozenLake cached visual sample](outputs/skill_discovery/frozenlake_visual/frozenlake_visual_dataset_20260722_0730/visual_sample_30.png)
+
+> [失败记录]
+> 小数据单测最初在 2 seeds 时用 `ceil(0.6N)` 将全部 seeds 放进 train，audit 为空。已限制 train seed count 至多 `N-1`，测试与正式 split 均通过。
+
+### Phase 5A Visual Metric v1：通过管线，但任务过易
+
+Run：`frozenlake_visual_metrics_20260722_0752`
+
+| Representation | Cross-seed 1-NN | Nuisance triplet | Rare safe/goal recall |
+| --- | ---: | ---: | ---: |
+| Raw terminal state | 1.000 | 0.997 | 1.000 |
+| Raw 3-frame pixels | 1.000 | 1.000 | 1.000 |
+| Random pixel projection | 1.000 | 1.000 | 1.000 |
+| Semantic oracle | 1.000 | 1.000 | 1.000 |
+
+> [失败记录]
+> Farthest-point helper 在所有剩余距离并列为 0 时会重复选择同一 index。现已用 selected mask 修复并加 regression test；v1 指标来自修复后重算。
+
+> [问题]
+> FrozenLake final sprite 直接显示完整 outcome，generation-seed split 不改变 renderer style，导致 raw pixels 已达到 ceiling。当前结果只能证明数据/metric 管线正确，不能证明 pretrained visual representation 有用。
+
+### Phase 5A Visual Metric v2：Audit-only Nuisance 计划
+
+- Train frames 保持原始官方 renderer；只对 audit seeds 37/47 应用固定、可复现且不改变 outcome 的 mild color/brightness shift 与最多 3-pixel translation。
+- 输出 transformed audit sample，人工确认 agent、holes、goal 仍可辨认。
+- 原样重算 raw pixels、random projection 与 oracle；semantic labels/state/action 不变。
+- 若 raw 明显下降而 oracle 保持 1.0，再选择一个 pretrained visual encoder；若 raw 仍接近 1.0，停止在 FrozenLake 上堆大模型，转用视觉 nuisance 更自然的 Pusher-Cup。
+
+### Phase 5A Visual Metric v2 结果：Nuisance Gap 成立
+
+Run：`frozenlake_visual_metrics_nuisance_20260722_0802`
+
+| Representation | Cross-seed 1-NN | Nuisance triplet | Oracle/data relation |
+| --- | ---: | ---: | --- |
+| Raw terminal state | 1.000 | 0.997 | 非视觉参考，不受 style 影响 |
+| Raw 3-frame pixels | **0.371** | **0.371** | 从 v1 的 1.0 明显下降 |
+| Random pixel projection | 0.441 | 0.441 | 仍不具备 invariance |
+| Semantic oracle | **1.000** | **1.000** | 标签与 split 未被变换破坏 |
+
+Audit sample 中 seeds 37/47 使用两种固定 mild palettes 与最多 3-pixel translation；人工检查 agent、holes、goal 与三帧时间顺序仍清晰。
+
+![FrozenLake visual nuisance sample](outputs/skill_discovery/frozenlake_visual/frozenlake_visual_metrics_nuisance_20260722_0802/audit_nuisance_sample.png)
+
+### Phase 5A DINOv2-small Probe 计划
+
+- 唯一 encoder：Hugging Face `facebook/dinov2-small`；使用 frozen pretrained weights，不 fine-tune。官方文档将 DINOv2 定义为可用于下游 feature extraction 的 vision foundation model：[Transformers DINOv2 documentation](https://huggingface.co/docs/transformers/model_doc/dinov2)。
+- 新环境：`/home/wang100/data/conda/envs/skill-vision`；`HF_HOME` 与 Torch cache 均放 `/home/wang100/data/`，不占 home。
+- 使用 CUDA GPU 0 批量编码 5,760 张缓存帧；每帧 CLS/pooler embedding L2 normalize，三帧按时间顺序 concatenate，缓存为一个 `.npz`。
+- Train 使用原始 seeds 7/17/27；audit 使用相同 deterministic nuisance 后的 37/47。模型不看 outcome labels。
+- 原样复用 cross-seed 1-NN、triplet 与 representative metrics。Gate 冻结为 1-NN 和 triplet 都至少比 raw pixels `0.371` 高 `0.15`（即 `>=0.521`）；否则记录 domain mismatch，不换第二个模型追结果。
+
+### Phase 5A DINOv2-small 结果：通过
+
+Run：`frozenlake_dinov2_small_20260722_0825`
+
+独立环境：`/home/wang100/data/conda/envs/skill-vision`。版本：Torch `2.7.1+cu118`、Torchvision `0.22.1+cu118`、Transformers `4.53.3`、NumPy `2.4.4`；模型/cache 均位于 `/home/wang100/data/`。
+
+- GPU 0（RTX 2080 Ti）以 FP16/batch 64 编码 5,760 frames，用时 `15.4s`。
+- 缓存 shape：frame embeddings `5760 x 384`；三帧按时间 concatenate 后 trajectory embeddings `1920 x 1152`。
+- Cross-seed 1-NN 与 nuisance triplet 均为 **0.8372**，超过冻结 threshold `0.5211`；raw pixels 为 0.3711。
+- Outcome recall：safe `0.5117`、hole `1.0000`、goal `1.0000`。主要残余错误是不同 style 下的 safe trajectories，不是 rare goal。
+- Imbalanced representative selection 为 safe/hole/goal `3/7/2`，三类覆盖与 rare safe/goal recall 均通过。
+
+![FrozenLake DINOv2 comparison](outputs/skill_discovery/frozenlake_visual/frozenlake_dinov2_small_20260722_0825/dinov2_comparison.svg)
+
+> [结果]
+> 一个 frozen pretrained visual encoder 在不看 labels、不 fine-tune 的条件下恢复了大部分 audit-style invariance。它仍未达到 oracle，尤其 safe mode 跨 style 容易混淆。
+
+## Phase 5B：Unsupervised Visual Prototype Audit
+
+状态：`计划已冻结`
+
+先不把 DINO embedding 放入 RL reward；用 train seeds 的无标签 trajectory embeddings 做 `K=3` clustering，audit seeds 只预测 cluster。Outcome labels 仅在训练后用于 Hungarian alignment 和评价：
+
+- 同时比较 raw pixels、random projection、DINOv2；K、initializations 与 seed 一致。
+- 报告 audit aligned accuracy、NMI、每 cluster size、每 outcome recall 和 collapse。
+- Gate：DINO audit aligned accuracy `>=0.70`，所有三个 clusters 非空，且至少高于 raw pixels `0.15`。
+- 若通过，cluster id 才成为下一轮 visual semantic reward 候选；若失败，下一步只做少量 reference prototype calibration，不把 labels 偷放进“无监督”方法。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
@@ -1300,6 +1390,13 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - Multi-seed：Plain Semantic 4/5 通过，seed 47 稳定 symmetry collapse。
 - 决定：不调 spread weight 或失败 seed；进入 cached visual probe，先验证数据/像素/oracle，再使用一个 pretrained encoder。
 
+### D-025：DINOv2 恢复 Audit-style Invariance
+
+- 日期：2026-07-22
+- Nuisance baseline：raw pixels/random projection 1-NN 为 0.371/0.441，oracle 1.0。
+- DINOv2-small：1-NN/triplet 0.837，hole/goal recall 1.0，safe recall 0.512。
+- 决定：不换第二个 encoder；先检验无标签 K=3 clusters 是否对应 outcomes，再决定能否作为 reward representation。
+
 ## 实验日志
 
 ### 2026-07-22：项目启动
@@ -1471,3 +1568,14 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 > [计划]
 > 下一阶段只生成平衡的 cached RGB trajectory dataset，先跑 raw pixels/random projection/oracle 离线 metric 与30条视觉抽样；数据 gate 后才选择一个 pretrained visual encoder。
+
+### 2026-07-22：FrozenLake DINOv2 Visual Gate 通过
+
+> [结果]
+> 1,920 条 cached RGB trajectories 与 split/data gate 通过；audit-only style shift 使 raw pixels 降至 0.371，DINOv2-small 恢复到 0.837，超过预注册 0.521 threshold。
+
+> [失败记录]
+> 原始无 style shift probe 中 raw pixels 已满分，无法比较 encoder；farthest-point helper 还会重复 tied indices。两者均记录并修复后才运行 DINO。
+
+> [计划]
+> 下一步只对缓存 DINO trajectories 做无标签 K=3 clustering，并用 outcome labels 事后评价；通过前不进入 online reward。

@@ -85,13 +85,18 @@ def _distance_ratio(features: np.ndarray, classes: np.ndarray) -> float:
 def _farthest_point_sample(features: np.ndarray, count: int) -> np.ndarray:
     count = min(count, len(features))
     selected = np.empty(count, dtype=np.int64)
+    selected_mask = np.zeros(len(features), dtype=bool)
     center = features.mean(axis=0, keepdims=True)
     selected[0] = int(np.argmax(np.sum((features - center) ** 2, axis=1)))
+    selected_mask[selected[0]] = True
     min_distance = np.sum((features - features[selected[0]]) ** 2, axis=1)
+    min_distance[selected_mask] = -np.inf
     for index in range(1, count):
         selected[index] = int(np.argmax(min_distance))
+        selected_mask[selected[index]] = True
         next_distance = np.sum((features - features[selected[index]]) ** 2, axis=1)
         min_distance = np.minimum(min_distance, next_distance)
+        min_distance[selected_mask] = -np.inf
     return selected
 
 
