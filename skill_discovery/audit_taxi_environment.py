@@ -101,7 +101,7 @@ def shortest_delivery_actions(base: object, start: int) -> list[int]:
     return actions
 
 
-def enumerate_reachable_states(base: object) -> dict[str, object]:
+def reachable_state_ids(base: object) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
     initial_states = np.flatnonzero(base.initial_state_distrib > 0)
     queue = deque(int(state) for state in initial_states)
     reachable = set(queue)
@@ -121,12 +121,28 @@ def enumerate_reachable_states(base: object) -> dict[str, object]:
                 elif next_state not in reachable:
                     reachable.add(next_state)
                     queue.append(next_state)
+    return (
+        tuple(int(state) for state in initial_states),
+        tuple(sorted(reachable)),
+        tuple(sorted(terminal_states)),
+    )
+
+
+def enumerate_reachable_states(base: object) -> dict[str, object]:
+    initial_states, reachable, terminal_states = reachable_state_ids(base)
+    deterministic = all(
+        len(base.P[state][action]) == 1
+        and float(base.P[state][action][0][0]) == 1.0
+        for state in reachable
+        for action in range(6)
+        if state not in terminal_states
+    )
     return {
         "nominal_state_count": int(base.observation_space.n),
         "initial_state_count": len(initial_states),
         "reachable_state_count": len(reachable),
         "terminal_state_count": len(terminal_states),
-        "terminal_states": sorted(terminal_states),
+        "terminal_states": list(terminal_states),
         "dry_transitions_deterministic": bool(deterministic),
     }
 
