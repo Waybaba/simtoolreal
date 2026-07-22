@@ -2490,6 +2490,28 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 > [里程碑]
 > Phase 5ZK完整fresh gate通过：无标签transition mass恢复了正确cluster order，严格因果、不可回退且不可跨级的decoder消除了door处的结构性反向边，并在新sequence seeds上保持高accuracy与零false-goal。支持的结论是sequence-native inductive bias对该有限、不可逆四阶段环境有效；它不推翻5ZJ raw graph失败，也不证明对可逆skill、8x8 scale、开放视觉分布或Hammer有效。
 
+## Phase 5ZL：Causal Visual Metric Online Discovery
+
+状态：`训练运行前协议冻结，尚未实现`
+
+### 单一替换与固定条件
+
+- 研究问题是：Phase 5ZK通过的causal visual stage能否替换Phase 5ZD online discovery与frozen policy reward中的oracle `semantic_stage`，同时保持相同的四技能control gate。
+- Policy observation仍是layout-aware 12-int compact state，动作仍是五个official actions；这不是pixels-to-action visual control。Oracle stage只允许用于独立evaluation与最终报告，不能进入bootstrap counts、reward、assignment、transition graph、replay relabel或option termination。
+- 完全复用Phase 5ZD的seeds `7/17/29`、5,000 bootstrap episodes、15,000 policy episodes、64 horizon、epsilon、semantic-spread objective、balanced assignment、transition threshold、replay、state-changing action mask、target-reaching option termination、evaluation seeds/checkpoints和0.80 gate。
+
+### Frozen visual lookup
+
+- 使用Phase 5ZG冻结的 `facebook/dinov2-small` current-frame centers与Phase 5ZK在groups 97/107无标签校准出的cluster order `[2,0,3,1]`；不refit DINO/centers，不在online runs中重新推断order。
+- 每个run首次遇到新compact key时渲染RGB、编码一次并nearest-center，之后从finite cache读取raw cluster。每次key复访仍校验RGB hash；同key多RGB立即失败。Cache key只减少重复视觉推理，不能提供stage label。
+- 每个episode reset decoder position为0；当前raw cluster恰为order中的下一个cluster时只前进一格，否则保持。Training reward、bootstrap buffer stage和policy option target都只读取这个decoded position。
+
+### Gate 与运行资源
+
+- 每个seed必须先通过visual bootstrap structural gate并运行policy phase；final四target furthest-stage rates、final-state rates、goal native success都各 `>=0.80`，最后三个checkpoints全部通过原specialization gate。
+- 三个runs的compact-state RGB alias均为0、四个raw clusters与四个decoded stages均被training查询。只有3/3 signal gates通过才允许声称causal visual metric成功替代oracle discovery reward。
+- Seeds 7/17/29各使用GPU 0/1/2的一张卡做on-demand DINO cache，GPU 3保持空闲。若任一失败，不改center、order、decoder、episode budget、threshold或seed set；保留失败并停止该online visual路线。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
