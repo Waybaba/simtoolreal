@@ -2783,6 +2783,32 @@ Run：`outputs/skill_discovery/pusher_v5_environment/environment_audit_20260722_
 > [里程碑]
 > 官方Pusher-v5的physics、reward与state接口严格稳定，RGB也清晰，但同状态EGL画面存在最多1/255的bitwise差异。这个差异实际很小，却违反冻结gate；因此本阶段保留失败并停止Pusher训练。下一小环境应优先选择无需native 3D rasterizer的公开2D continuous-control环境，把representation问题和renderer determinism分开。
 
+## Phase 5ZS：MountainCarContinuous 2D Environment Gate
+
+状态：`预注册；未运行`
+
+### 目的与冻结协议
+
+使用本地Gymnasium `1.3.0`官方`MountainCarContinuous-v0`，作为Pusher失败后的公开2D continuous-control候选。它只有2维`[position, velocity]` observation、1维`[-1,1]` action、Pygame `600x400` RGB和999-step TimeLimit；不引入IsaacLab、MuJoCo或新环境依赖。
+
+- 固定`SDL_VIDEODRIVER=dummy`、`render_mode="rgb_array"`，不改screen、mountain geometry、goal `0.45`、power `0.0015`、reward或TimeLimit。
+- Seeds固定`7/17/29/41/53`。每seed用独立RNG生成256-step uniform action tape，在两个新实例中重放；保存每步state/reward/flags与RGB exact hash。
+- 独立scripted reachability只使用`action=-1 if velocity<=0 else +1`的固定energy controller，不读取position threshold、reward或未来状态。每seed最多999步；它只证明官方任务可达，不作为learning baseline。
+- 预注册ordered audit stages：reset/valley为0；曾到达`position<=-0.75`为`left_momentum`；之后曾到达`position>=0.0`为`right_climb`；native terminated为`goal`。Stages只用于审计scripted trajectory，未来visual metric前还会另写dataset split。
+- 保存每seed的reset、首次left、首次right、goal四帧联系表；人工检查car、mountain和goal flag清楚可见，stage顺序与画面一致。
+
+### Gates
+
+- API/dynamics：state shape `(2,)`、action shape `(1,)`、reset position在`[-0.6,-0.4]`且velocity为0；独立重算官方velocity/position update最大误差`<=1e-7`，reward exact等于`100*terminated - 0.1*action^2`。
+- Reproducibility：五个random tapes的reset、全部states/rewards/flags与257个RGB hashes在双实例间exact equal；五个reset positions至少四个unique values。
+- RGB：全部frame shape `400x600x3 uint8`、pixel standard deviation `>5`、每条random trajectory至少两个unique hashes；四阶段联系表人工通过。
+- Reachability：固定energy controller五个seeds全部在999步内native terminated，且每条ordered stage sequence严格包含`0 -> 1 -> 2 -> 3`；不要求random tape到达goal。
+
+全部gate通过后，下一阶段才生成balanced stage visual dataset，比较raw/full-frame feature与简单learned car-position representation；失败则保留结果并停止该候选，不改stage threshold、controller或renderer。
+
+> [大计划]
+> 先实现可复用的官方dynamics/reward重算与双实例审计，再运行五个seeds。预计分钟级以内；若命令超过首个窗口，按约300秒阻塞等待，不做高频查询。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
