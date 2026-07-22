@@ -56,6 +56,7 @@ class DoorKeyTabularConfig:
     eval_episodes_per_skill: int = 512
     stability_checkpoints: int = 3
     stage_rate_gate: float = 0.80
+    valid_action_mask: bool = False
 
     def __post_init__(self) -> None:
         if self.num_skills != len(DOORKEY_STAGES):
@@ -125,6 +126,30 @@ def compact_doorkey_state(env: gym.Env) -> DoorKeyState:
     )
 
 
+def state_changing_action_indices(env: gym.Env) -> tuple[int, ...]:
+    base = env.unwrapped
+    front_x, front_y = (int(value) for value in base.front_pos)
+    front = base.grid.get(front_x, front_y)
+    valid = [0, 1]
+    if front is None or bool(front.can_overlap()):
+        valid.append(2)
+    if (
+        base.carrying is None
+        and front is not None
+        and bool(front.can_pickup())
+    ):
+        valid.append(3)
+    if front is not None and front.type == "door":
+        can_unlock = (
+            base.carrying is not None
+            and base.carrying.type == "key"
+            and base.carrying.color == front.color
+        )
+        if not bool(front.is_locked) or can_unlock:
+            valid.append(4)
+    return tuple(valid)
+
+
 def _values(
     table: dict[DoorKeyState, np.ndarray],
     key: DoorKeyState,
@@ -148,8 +173,18 @@ def _epsilon(config: DoorKeyTabularConfig, episode: int) -> float:
     )
 
 
-def _training_action(values: np.ndarray, rng: np.random.Generator) -> int:
-    candidates = np.flatnonzero(np.isclose(values, values.max()))
+def _training_action(
+    values: np.ndarray,
+    rng: np.random.Generator,
+    valid_indices: tuple[int, ...],
+) -> int:
+    valid_values = values[list(valid_indices)]
+    maximum = valid_values.max()
+    candidates = [
+        index
+        for index in valid_indices
+        if np.isclose(values[index], maximum)
+    ]
     return int(rng.choice(candidates))
 
 
@@ -176,7 +211,15 @@ def _rollout(
             key = compact_doorkey_state(env)
             keys.append(key)
             values = _values(q_table, key, create=False)
-            action_index = int(np.argmax(values[skill]))
+            valid_indices = (
+                state_changing_action_indices(env)
+                if config.valid_action_mask
+                else tuple(range(len(DOORKEY_POLICY_ACTIONS)))
+            )
+            action_index = max(
+                valid_indices,
+                key=lambda index: (float(values[skill, index]), -index),
+            )
             action = DOORKEY_POLICY_ACTIONS[action_index]
             _, reward, terminated, truncated, _ = env.step(action)
             native_reward = float(reward)
@@ -405,10 +448,19 @@ def train_run(
                 key = compact_doorkey_state(env)
                 q_values = _values(q_table, key, create=True)
                 visit_values = _values(visits, key, create=True)
+                valid_indices = (
+                    state_changing_action_indices(env)
+                    if config.valid_action_mask
+                    else tuple(range(len(DOORKEY_POLICY_ACTIONS)))
+                )
                 if rng.random() < epsilon:
-                    action_index = int(rng.integers(len(DOORKEY_POLICY_ACTIONS)))
+                    action_index = int(rng.choice(valid_indices))
                 else:
-                    action_index = _training_action(q_values[skill], rng)
+                    action_index = _training_action(
+                        q_values[skill],
+                        rng,
+                        valid_indices,
+                    )
                 _, native_reward, terminated, truncated, _ = env.step(
                     DOORKEY_POLICY_ACTIONS[action_index]
                 )
@@ -428,11 +480,19 @@ def train_run(
                     )
                 else:
                     next_key = compact_doorkey_state(env)
-                    target = reward + config.gamma * _values(
+                    next_values = _values(
                         q_table,
                         next_key,
                         create=True,
-                    )[skill].max()
+                    )
+                    next_valid_indices = (
+                        state_changing_action_indices(env)
+                        if config.valid_action_mask
+                        else tuple(range(len(DOORKEY_POLICY_ACTIONS)))
+                    )
+                    target = reward + config.gamma * next_values[
+                        skill, list(next_valid_indices)
+                    ].max()
                 visit_values[skill, action_index] += 1
                 step_size = float(visit_values[skill, action_index] ** -0.6)
                 q_values[skill, action_index] += step_size * (
@@ -471,6 +531,7 @@ def train_run(
         "policy_actions": DOORKEY_POLICY_ACTIONS,
         "elapsed_seconds": elapsed,
         "training_layout_seed_mode": "common_per_four_skill_cycle",
+        "valid_action_mask": config.valid_action_mask,
         "terminal_counts": terminal_counts.tolist(),
         "native_success_counts": native_success_counts.tolist(),
         "q_state_count": len(q_table),
@@ -494,6 +555,7 @@ def main() -> None:
     parser.add_argument("--horizon", type=int, default=64)
     parser.add_argument("--evaluation-checkpoints")
     parser.add_argument("--eval-episodes", type=int, default=512)
+    parser.add_argument("--valid-action-mask", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     checkpoints = (
@@ -507,9 +569,11 @@ def main() -> None:
         horizon=args.horizon,
         evaluation_checkpoints=checkpoints,
         eval_episodes_per_skill=args.eval_episodes,
+        valid_action_mask=args.valid_action_mask,
     )
+    mask_tag = "_actionmask" if config.valid_action_mask else ""
     run_id = (
-        f"doorkey5_tabular_balanced_control_seed{config.seed}_"
+        f"doorkey5_tabular_balanced_control{mask_tag}_seed{config.seed}_"
         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
     output_dir = args.output_dir or Path(

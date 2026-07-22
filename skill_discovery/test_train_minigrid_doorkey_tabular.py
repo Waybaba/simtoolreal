@@ -16,6 +16,7 @@ from skill_discovery.train_minigrid_doorkey_tabular import (
     DoorKeyTabularConfig,
     common_layout_seed,
     compact_doorkey_state,
+    state_changing_action_indices,
     train_run,
 )
 
@@ -48,6 +49,21 @@ class DoorKeyTabularTrainerTest(unittest.TestCase):
         self.assertEqual(DOORKEY_CONTROL_MATRIX[2], (0.0, 0.0, 1.0, -1.0))
         self.assertEqual(DOORKEY_CONTROL_MATRIX[3], (0.0, 0.0, 0.0, 1.0))
 
+    def test_action_mask_removes_pickup_after_key_is_carried(self) -> None:
+        env = gym.make("MiniGrid-DoorKey-5x5-v0")
+        try:
+            env.reset(seed=7)
+            actions = plan_to_face(env, object_positions(env)["key"])
+            for action in actions:
+                env.step(action)
+            before = state_changing_action_indices(env)
+            env.step(int(Actions.pickup))
+            after = state_changing_action_indices(env)
+        finally:
+            env.close()
+        self.assertIn(3, before)
+        self.assertNotIn(3, after)
+
     def test_tiny_run_writes_control_artifacts(self) -> None:
         config = DoorKeyTabularConfig(
             seed=127,
@@ -55,6 +71,7 @@ class DoorKeyTabularTrainerTest(unittest.TestCase):
             horizon=8,
             evaluation_checkpoints=(20, 30, 40),
             eval_episodes_per_skill=2,
+            valid_action_mask=True,
         )
         with tempfile.TemporaryDirectory() as temporary:
             output_dir = Path(temporary) / "run"

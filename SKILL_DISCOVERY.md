@@ -2046,7 +2046,7 @@ Summary：`gotoobject_balanced_transition_replay_multiseed_7_17_29_20260722_1054
 
 ## Phase 5Z：DoorKey 5x5 Tabular Compositional Control
 
-状态：`20k balanced-control diagnostic计划已冻结，尚未运行`
+状态：`20k balanced-control完成；door option后期collapse，正式失败`
 
 - 回到公开 `MiniGrid-DoorKey-5x5-v0`，复用Phase 4A已通过的official dynamics、scripted solver和四个furthest stages：navigation/key/door/goal。不使用IsaacLab，也不修改MiniGrid grid生成。
 - 本地重新审计前10000 seeds只有48种initial grid+agent signatures，tabular layout-aware control可行。Compact state固定包含agent `(x,y,dir)`、key floor position或carried、door `(x,y,open,locked)`、goal position；不能隐藏layout。
@@ -2057,6 +2057,40 @@ Summary：`gotoobject_balanced_transition_replay_multiseed_7_17_29_20260722_1054
 - Checkpoints固定为4k/8k/12k/18k/19k/20k，每次512 common layouts/skill；last-3全部post-anneal。Independent final另用512 layouts/skill。
 - 20k diagnostic gate要求四个固定target stage rates和goal native success各 `>=0.80`，且last-3全部通过；不允许用best row permutation替换固定oracle targets。保存terminal matrix、Q/visits、curves、四skill rollout contact sheet与manifest，并人工核对pickup/open/goal真实性。
 - 若通过，再写DoorKey online discovery+balanced-transition replay计划；若失败，不直接增加预算，先按stage定位是goal credit、door interaction还是compact-state alias。
+
+### 20k Control 结果
+
+Run：`doorkey5_tabular_balanced_control_seed7_20260722_111420`
+
+| Episodes | Navigation | Key | Door | Goal/native | Gate |
+| ---: | ---: | ---: | ---: | ---: | :---: |
+| 4k | 1.000 | 1.000 | 1.000 | 0.494 | fail |
+| 8k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 12k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 18k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 19k | 1.000 | 1.000 | 0.494 | 1.000 | fail |
+| 20k | 1.000 | 1.000 | 0.586 | 1.000 | fail |
+| Independent final | 1.000 | 1.000 | 0.594 | 1.000 | fail |
+
+- Goal native success达到1.0，说明四阶段long-horizon reachability、compact layout observation和transitive-ancestor reward可以支持完整任务；失败集中在非终止的door option。
+- Door曾在4k--18k连续为1.0，但epsilon归零后collapse。Final 48种initial configurations中28种打开door，20种停在key acquired；失败policy拿到key后反复执行official pickup action，形成无状态变化的self-loop。
+- 前10000 seeds的48种full grid+agent signatures与48种compact initial keys一一对应，ambiguous compact states为0；当前没有layout alias证据。Final Q仅160 states，collapse更符合无效action self-loop与bootstrapped Q tie/overestimate。
+- 训练期间door skill的5000 episodes中4597个到door，说明数据并不缺失；继续加预算不能直接解决greedy self-loop。
+- Contact sheet和manifest核对四条代表轨迹：key真实被携带、door真实open、goal使用native termination/reward；代表door成功不掩盖总体0.594。
+
+![DoorKey tabular control audit](outputs/skill_discovery/minigrid_doorkey_training/doorkey5_tabular_balanced_control_seed7_20260722_111420/policy_rollout_audit.png)
+
+> [失败记录]
+> 固定动作集合仍包含context-invalid pickup/toggle/blocked-forward no-ops。Door目标没有termination，Q-learning可在key stage把无效pickup self-loop估高；goal目标由native termination打断所以不受同样影响。下一单变量诊断使用state-changing official-action mask，不改reward、state、预算或optimizer。
+
+## Phase 5ZA：DoorKey State-changing Action Mask
+
+状态：`20k单变量control diagnostic计划已冻结，尚未运行`
+
+- 完全复用Phase 5Z seed 7、20k、64 horizon、CRN layouts、reward matrix、Q update、epsilon、checkpoints、evaluation和0.80 gate。唯一变化是training/evaluation都在每个state屏蔽不会改变环境的actions。
+- Left/right始终有效；forward仅在front cell为空或可overlap时有效；pickup仅在未携带物体且front object可pickup时有效；toggle仅在front为door且当前能够改变door状态时有效。所有保留动作仍是官方MiniGrid actions，不加入solver或高层macro。
+- 预注册预测是door final高于0.594且不再出现carrying后重复pickup；四target rates、goal native success与last-3仍需各 `>=0.80`。
+- 若通过，action abstraction成为后续DoorKey discovery固定接口；若失败，不扩大mask或预算，检查door post-open stopping与Q-value分布。
 
 ## Phase 6：迁移到 Hammer
 
