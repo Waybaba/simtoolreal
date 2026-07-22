@@ -3,9 +3,9 @@
 > [当前状态]
 > 分支：`codex/skill-discovery`
 >
-> 当前阶段：DoorKey 5x5 oracle-semantic discovery通过，但visual reward因exploration distribution shift而0/3失败并停止。下一public graphical bridge Taxi-v4的完整environment gate已经通过。
+> 当前阶段：DoorKey visual reward因exploration distribution shift而0/3失败；Taxi-v4 environment gate通过，但完整404-state domain上的frozen DINO reference upper bound也失败，Taxi visual reward未启动。
 >
-> 当前动作：Taxi-v4的404-state exploration domain可在训练前完整覆盖。下一步先冻结train/audit destination+orientation split，比较raw/DINO/reference semantic metric；metric通过前不训练Taxi skill objective，Hammer继续后移。
+> 当前动作：连续两个public graphical benchmarks说明full-frame DINO current不能稳定表达object-interaction semantics。停止Taxi视觉路线；下一步应转向真正的object-centric或vision-language/reference-trained representation，而不是继续更换控制环境或把失败embedding接入reward。Hammer继续后移。
 
 ## 一眼看完整流程
 
@@ -2584,7 +2584,7 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 
 ## Phase 5ZN：Taxi Full-domain Frozen Visual Metric Upper Bound
 
-状态：`数据生成前协议冻结，尚未实现`
+状态：`完整domain运行失败，停止Taxi visual路线`
 
 ### 数据域与固定 Split
 
@@ -2604,6 +2604,31 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 - Joint audit overall accuracy `>=0.80`，waiting/onboard/delivered recalls各 `>=0.75`，destinations 1/3各accuracy `>=0.75`，orientations 1/3各accuracy `>=0.75`，三个predicted classes均非空。
 - 保存三stage/destination/orientation联系表并人工检查taxi、passenger与hotel；dataset必须1,616帧、404 states、每state四个不同orientation hashes、split无destination或orientation泄漏。
 - 若DINO reference upper bound通过，下一大计划才减少reference supervision并设计Taxi semantic-spread reward；若失败，不改split、gate、image crop、DINO layer或reference labels，停止Taxi视觉路线。
+
+### 完整数据与 Metric 结果
+
+- Dataset：`taxi_full_visual_dataset_20260722_134642`
+- Metric：`taxi_visual_metric_20260722_134727`
+- Dataset完整保存1,616张full-resolution frames，压缩NPZ为97 MB。四splits均为300/100/4，404 states各四orientation hashes不同，data gate与人工3x4联系表通过。
+- DINO在物理GPU 3编码全部1,616帧耗时7.79秒；torch/transformers/model正常完成，没有missing batch或fit audit data。Reference centers只使用split 0 labels。
+
+| Method / split | Accuracy | Waiting recall | Onboard recall | Delivered recall | Gate |
+| --- | ---: | ---: | ---: | ---: | :---: |
+| Raw reference / train | 0.733 | 0.680 | 0.880 | 1.000 | diagnostic |
+| Raw reference / **joint** | 0.705 | 0.657 | 0.880 | 0.000 | fail |
+| DINO reference / train | 0.545 | 0.707 | 0.040 | 1.000 | fail |
+| DINO reference / **joint** | **0.636** | **0.833** | **0.050** | **0.500** | **fail** |
+
+- Joint DINO destination accuracies为0.530/0.743、orientation accuracies为0.639/0.634，均未达到0.75。最关键的onboard recall只有0.05，说明passenger disappearance被taxi位置、hotel与大面积背景variation压过。
+- Natural KMeans同样失败：raw/DINO joint accuracy为0.260/0.460；DINO train KMeans delivered recall为0。Natural class volume没有自动恢复rare semantic mode。
+- Raw centroid在joint split优于DINO但delivered recall为0，也不能作为reward metric。按协议不改crop、DINO layer、split、gate或reference labels，不启动Taxi skill training。
+
+![Taxi full-domain visual dataset](outputs/skill_discovery/taxi/taxi_full_visual_dataset_20260722_134642/taxi_full_visual_contact_sheet.png)
+
+![Taxi full-domain visual metric](outputs/skill_discovery/taxi/taxi_visual_metric_20260722_134727/taxi_visual_metric_accuracy.svg)
+
+> [里程碑]
+> Taxi环境与数据完整性通过，但frozen full-frame DINO reference upper bound失败。即使完整覆盖online exploration domain并允许train-stage labels计算centroids，DINO仍几乎无法识别passenger onboard；这把问题从“rollout distribution没有覆盖”进一步收窄到“generic full-image representation不保留目标object interaction”。下一方法必须改变representation source或object-centric structure，不能只把同一DINO接到另一个reward。
 
 ## Phase 6：迁移到 Hammer
 
