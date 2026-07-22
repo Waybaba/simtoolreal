@@ -2582,6 +2582,29 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 > [里程碑]
 > Taxi-v4 environment gate完整通过。它提供短且可组合的pickup→transport→dropoff链、自然不平衡但可达的terminal event，以及可在训练前穷举的完整online state domain；同时orientation造成同state多图，迫使后续视觉方法显式处理nuisance而不能使用DoorKey的single-frame key cache捷径。
 
+## Phase 5ZN：Taxi Full-domain Frozen Visual Metric Upper Bound
+
+状态：`数据生成前协议冻结，尚未实现`
+
+### 数据域与固定 Split
+
+- 枚举Taxi-v4全部404 reachable states，并对每个state渲染official south/north/east/west四种taxi orientations，共1,616张 `(350,550,3)` RGB。每条保存state、decoded row/col/passenger/destination、orientation与oracle audit stage；不从有限rollout抽样替代完整online domain。
+- 每个destination恰有75 waiting、25 onboard、1 delivered states。Train/reference固定为destinations `0/2`和orientations `0/2`；primary joint audit固定为destinations `1/3`和orientations `1/3`。两边各404帧，stage counts均为300/100/4，保留natural volume imbalance。
+- 另报告destination-only holdout（destinations 1/3、orientations 0/2）与orientation-only holdout（destinations 0/2、orientations 1/3）；它们是诊断，不改变primary joint split。
+
+### Methods 与标签边界
+
+- Primary是frozen `facebook/dinov2-small` current-frame embedding的reference-centroid upper bound。只在train split按oracle stage分别计算三个normalized centroids；audit embedding只nearest centroid，不refit、不读取audit labels。
+- Raw baseline使用固定32x32 downsample RGB和相同的train-label centroid流程。两者使用完全相同的reference rows，避免把supervision差异当成representation差异。
+- Natural KMeans diagnostic在未平衡train embeddings上fit `K=3`，train labels只允许事后maximum-weight cluster alignment；报告train与三个holdout的accuracy/recall/cluster sizes。它不参与primary gate，用来观察rare delivered是否被volume-based clustering忽略。
+- Oracle labels用于构造reference upper bound和最终audit，所以本阶段不能称为unsupervised skill discovery；它只判断“在完整exploration domain上，frozen visual feature是否存在足够的semantic separability”。
+
+### Primary Gate
+
+- Joint audit overall accuracy `>=0.80`，waiting/onboard/delivered recalls各 `>=0.75`，destinations 1/3各accuracy `>=0.75`，orientations 1/3各accuracy `>=0.75`，三个predicted classes均非空。
+- 保存三stage/destination/orientation联系表并人工检查taxi、passenger与hotel；dataset必须1,616帧、404 states、每state四个不同orientation hashes、split无destination或orientation泄漏。
+- 若DINO reference upper bound通过，下一大计划才减少reference supervision并设计Taxi semantic-spread reward；若失败，不改split、gate、image crop、DINO layer或reference labels，停止Taxi视觉路线。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
