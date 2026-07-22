@@ -3,9 +3,9 @@
 > [当前状态]
 > 分支：`codex/skill-discovery`
 >
-> 当前阶段：小环境路线已完成到Taxi-v4 full-domain visual gate；现有Hammer数据审计完成。`isaaclab510` physics smoke通过，但RTX rendering在当前4x RTX 2080 Ti机器上启动即崩溃，不能用它补录视频。
+> 当前阶段：小环境路线已完成到Taxi-v4 full-domain visual gate；现有Hammer数据审计完成。`isaaclab510` physics smoke通过，但host与Docker的RTX rendering均在当前4x RTX 2080 Ti机器上启动即崩溃，Hammer视觉gate被硬件阻断。
 >
-> 当前动作：保留5.1 rendering失败为迁移结论；使用仓库现成、历史验证过的隔离Docker runtime只补录四条env0视频/状态严格同步短轨迹，再做object-centric或vision-language离线metric gate。通过前不接reward。
+> 当前动作：停止RTX参数试错；先用`isaaclab510`在四张卡完成四条无渲染env0状态rollout，验证旧checkpoint是否真实移动/抬升hammer。新视频和object-centric/VLM gate保持未完成，不把state-only结果冒充视觉结果。
 
 ## 一眼看完整流程
 
@@ -2696,7 +2696,9 @@ Primary gate：
 
 因此当前迁移结论是：Isaac Lab 5.1 physics/API路径可运行，5.1 RTX rendering路径在本机硬件/驱动组合上失败。NVIDIA的5.1 requirements列出的最低GPU是RTX 4080/16 GB、测试Linux驱动为580.65.06；本机是4x RTX 2080 Ti/11 GB和610.43.02，低于其渲染最低配置。参考：`https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/requirements.html`。
 
-按预注册，视觉数据仍必须补录，但不继续改5.1 renderer参数。回退到仓库已有`simtoolreal-isaaclab:latest`隔离Docker runtime；该runtime是现有圆柄训练/评估视频的数据来源。每张物理GPU使用独立容器、Kit目录和日志。Docker结果只用于Hammer离线视觉metric，不宣称5.1 rendering迁移成功。
+仓库已有`simtoolreal-isaaclab:latest`隔离Docker runtime也做了单卡复测，但它在同一`librtx.scenedb.plugin`位置崩溃，未创建env或视频。这说明当前Docker镜像并不是可绕过该渲染问题的旧runtime；Docker视频回退作废。
+
+按预注册，Hammer object-centric/VLM正式gate保持`未运行/硬件阻断`，不得用历史错配数据替代。仍可完成一个独立的state-only复现：四个checkpoint分别在四张GPU运行一个256步headless physics rollout，env0原始pose逐步写入JSONL。它只回答旧策略是否真实移动、抬升和接近目标，不回答视觉表示是否有效。
 
 ## Phase 7：组合性与下游任务
 

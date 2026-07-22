@@ -16,6 +16,7 @@ ISAACLAB_PYTHON="${ISAACLAB_PYTHON:-/home/wang100/data/conda/envs/isaaclab510/bi
 DATA_ROOT="${DATA_ROOT:-/home/wang100/data}"
 RUN_GROUP="${RUN_GROUP:-skill_discovery_hammer_sync_20260722}"
 TIMESTAMP="${TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
+RENDER_MODE="${RENDER_MODE:-video}"
 
 if [[ ! -x "${ISAACLAB_PYTHON}" ]]; then
   echo "Missing isaaclab510 Python: ${ISAACLAB_PYTHON}" >&2
@@ -46,7 +47,7 @@ mkdir -p \
   "${DATA_ROOT}/isaaclab510_portable/gpu${GPU_ID}"
 
 echo "run_name=${run_name}"
-echo "gpu=${GPU_ID} checkpoint=${CHECKPOINT} seed=${SEED} log=${log_path}"
+echo "gpu=${GPU_ID} checkpoint=${CHECKPOINT} seed=${SEED} render_mode=${RENDER_MODE} log=${log_path}"
 
 cd "${REPO_ROOT}"
 unset CUDA_VISIBLE_DEVICES
@@ -58,6 +59,30 @@ export HF_HOME="${DATA_ROOT}/cache/huggingface"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export ACCEPT_EULA=Y
 export OMNI_KIT_ACCEPT_EULA=YES
+
+case "${RENDER_MODE}" in
+  video)
+    capture_args=(
+      --capture_video
+      --capture_video_freq 1000000
+      --capture_video_len 240
+      --capture_video_env_id 0
+      --no-capture_video_start_on_reset
+      --video_camera_mode env_subject
+      --video_camera_eye_offset 0.32 -0.72 1.04
+      --video_camera_target_offset 0.04 -0.02 0.55
+    )
+    kit_args="--portable-root ${DATA_ROOT}/isaaclab510_portable/gpu${GPU_ID} --/renderer/multiGpu/enabled=false --/renderer/multiGpu/autoEnable=false --/renderer/activeGpu=${GPU_ID}"
+    ;;
+  state_only)
+    capture_args=(--no-capture_video --capture_video_freq 1)
+    kit_args="--portable-root ${DATA_ROOT}/isaaclab510_portable/gpu${GPU_ID}_state"
+    ;;
+  *)
+    echo "RENDER_MODE must be video or state_only, got: ${RENDER_MODE}" >&2
+    exit 2
+    ;;
+esac
 
 exec "${ISAACLAB_PYTHON}" -u scripts/train_simtoolreal_cleanrl.py \
   --task SimToolReal-Direct-v0 \
@@ -86,14 +111,7 @@ exec "${ISAACLAB_PYTHON}" -u scripts/train_simtoolreal_cleanrl.py \
   --save_frequency 1000000 \
   --save_best_after 1000000 \
   --no-wandb \
-  --capture_video \
-  --capture_video_freq 1000000 \
-  --capture_video_len 240 \
-  --capture_video_env_id 0 \
-  --no-capture_video_start_on_reset \
-  --video_camera_mode env_subject \
-  --video_camera_eye_offset 0.32 -0.72 1.04 \
-  --video_camera_target_offset 0.04 -0.02 0.55 \
+  "${capture_args[@]}" \
   --trajectory_log \
   --trajectory_log_selection first \
   --trajectory_log_max_envs 1 \
@@ -155,5 +173,5 @@ exec "${ISAACLAB_PYTHON}" -u scripts/train_simtoolreal_cleanrl.py \
   --env_device "cuda:${GPU_ID}" \
   --kit_active_gpu "${GPU_ID}" \
   --kit_physics_gpu "${GPU_ID}" \
-  --kit_args "--portable-root ${DATA_ROOT}/isaaclab510_portable/gpu${GPU_ID} --/renderer/multiGpu/enabled=false --/renderer/multiGpu/autoEnable=false --/renderer/activeGpu=${GPU_ID}" \
+  --kit_args "${kit_args}" \
   >"${log_path}" 2>&1
