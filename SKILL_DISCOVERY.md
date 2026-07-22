@@ -3245,6 +3245,32 @@ Run：`outputs/skill_discovery/mountaincar_continuous/isotonic_state_decoder_202
 > [里程碑]
 > Local monotonic calibration证明RGB centroid几乎可以精确恢复状态，但极少数边界velocity误差仍超过严格lock。更重要的是当前balanced audit已被多次查看，后续模型不能继续把它当最终holdout；下一阶段应建立全新seed的balanced和natural lockbox。
 
+## Phase 7A：Fresh Balanced + Natural Lockbox
+
+状态：`预注册；未生成lockbox`
+
+Phase 5ZZ的reference/audit已经被多次模型分析，从本阶段起合并为development（每类512），不再声称是holdout。Phase 7A在看任何新样本前同时冻结最终model、fresh balanced lockbox及fresh natural lockbox；最终只允许一次顺序评估。
+
+### Frozen Development Model
+
+- Development features固定为`explicit_none_20260722_172340/five_class_car_motion_features.npz`全部2,560 pairs；不加入natural data或早期uniform-none。
+- `HistGradientBoostingClassifier`固定`loss="log_loss"`、`learning_rate=0.08`、`max_iter=200`、`max_leaf_nodes=15`、`max_depth=6`、`min_samples_leaf=12`、`l2_regularization=0.1`、`early_stopping=False`、`class_weight=None`、`random_state=18,100,007`。不做CV/grid search；旧audit分数不能改变参数。
+
+### Fresh Balanced Lockbox
+
+- 四个relation lockbox继续使用原official proposals/predicates，各256；base seed `12,100,007 + 100,000*class_index`。None使用Phase 5ZZ frozen visible eight strata，每层32，seed `13,100,007 + 100,000*stratum_index`，合计256。
+- 所有1,280 pair hashes必须class内unique、class间无重叠，并与此前positive dataset、uniform-none Phase 5ZX、visible-stratified Phase 5ZZ全部pair hashes零重叠。保存full RGB/state/action/next-state/labels、五类及八层联系表。
+- 使用Phase 5ZV frozen median background提取同一三维car-motion feature，不重估background。Data/manual gates通过后model只评估一次；要求accuracy/macro各`>=0.98`、五类recall各`>=0.95`、五个predicted classes非空。
+
+### Fresh Natural Lockbox
+
+- Balanced lockbox通过才运行。协议预算保持128 energy、256x200 random、4 workers；fresh environment seeds从`15,100,000`和`16,100,000`开始，fresh random-action seed `17,100,007`。
+- Coverage与deployment gates保持：四relations各至少100、none至少10,000；relation macro `>=0.95`、各`>=0.90`、goal `>=0.95`；none recall `>=0.90`、none->goal `<=0.01`、五个predicted classes非空。联系表人工通过。
+- 不使用fresh balanced或natural labels重训、校准probability、改model/data。任一lockbox失败即停止MountainCar metric搜索；两者通过才进入visual reward control smoke。
+
+> [大计划]
+> 先实现并生成hash-isolated full-RGB balanced lockbox，人工确认后冻结artifact；再fit development model并做唯一一次balanced evaluation。通过才实现fresh natural adapter。长命令按约300秒阻塞等待。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
