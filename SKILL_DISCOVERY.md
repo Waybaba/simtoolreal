@@ -3004,6 +3004,29 @@ Run：`outputs/skill_discovery/mountaincar_continuous/rollout_rejection_20260722
 > [里程碑]
 > Balanced四类上的0.996 accuracy不能代表可部署metric：进入真实rollout后，四正类support把67.2%的普通transition吸收，尤其几乎都变成valley_return。Goal误报为0是好消息，但整体reward仍会被大量假阳性主导。下一阶段必须把`none`作为显式训练/reference class，而不是继续调rejection阈值。
 
+## Phase 5ZX：Explicit None-class Paired Deployment
+
+状态：`预注册；未采集none data`
+
+### Frozen None Dataset
+
+- 保留Phase 5ZV四个relation shards、median background与三维car-motion feature不变。新增`none`，定义为official transition对四个relation predicates全部为false。
+- Proposal固定uniform previous position `[-1.15,0.58]`、velocity `[-0.07,0.07]`、action `[-1,1]`，用official dynamics计算next；只接受none。Reference seed `8,100,007`、audit seed `9,100,007`，各256个unique pair hashes。
+- None pair hashes必须split内unique、reference/audit无交集，并与现有四relation dataset全部pair hashes无交集。保存full RGB、state/action/next state与联系表；不使用Phase 5ZW natural-rollout labels选择none samples。
+- Data gate通过后，从冻结background提取同一`[x_t,x_t+1,delta]` feature；不重新估background，不运行DINO。
+
+### Five-class Metric 与 Paired Natural Gate
+
+- Reference set为原四类各256加none 256。Classifier固定为五类Euclidean 1-NN，**不再使用rejection threshold**；none label只是第五个reference class。
+- 先在balanced audit（四relations原audit + none audit）要求5-class accuracy/macro recall各`>=0.98`、五类recall各`>=0.95`。
+- 然后原样重跑Phase 5ZW：128 energy、256x200 random、相同environment/action seeds、workers与RGB feature。不得把首次rollout confusion用于none采样或feature修改。
+- Natural deployment gate保持：四relation macro `>=0.95`、各`>=0.90`、goal `>=0.95`；none recall `>=0.90`（即总FPR `<=0.10`）、none->goal `<=0.01`、五个predicted classes均非空。
+
+若通过，下一步才允许visual relation reward control smoke。失败时保留五类结果，下一候选只能预注册按position/motion regime分层的none data；不增加nearest-neighbor margin、不重新采natural seeds、不调feature。
+
+> [大计划]
+> CPU先生成512个none pairs并人工看联系表；随后跑balanced five-class gate。两者通过才花约4分钟做paired natural rollout；长命令继续按约300秒等待。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
