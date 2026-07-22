@@ -3247,7 +3247,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/isotonic_state_decoder_202
 
 ## Phase 7A：Fresh Balanced + Natural Lockbox
 
-状态：`fresh balanced lockbox通过；fresh natural未运行`
+状态：`已完成；fresh natural relation gate失败，MountainCar metric搜索停止`
 
 Phase 5ZZ的reference/audit已经被多次模型分析，从本阶段起合并为development（每类512），不再声称是holdout。Phase 7A在看任何新样本前同时冻结最终model、fresh balanced lockbox及fresh natural lockbox；最终只允许一次顺序评估。
 
@@ -3294,6 +3294,18 @@ Run：`outputs/skill_discovery/mountaincar_continuous/hist_gradient_lockbox_2026
 
 > [里程碑]
 > 全新、hash-isolated holdout复现了0.992 balanced性能，说明改进不是反复查看旧audit造成的。下一步只运行全新seeds的natural lockbox，模型与feature不再变化。
+
+### Phase 7A Fresh Natural 结果：Right-climb Recall 未过 Lockbox
+
+Run：`outputs/skill_discovery/mountaincar_continuous/fresh_natural_lockbox_20260722_174957`
+
+- Fresh seeds产生61,384 transitions；oracle counts为none 44,205、left 2,675、valley 13,237、right 1,139、goal 128，coverage gate完整通过。
+- Combined recalls为left `0.975`、valley `0.949`、right `0.860`、goal `0.984`；right低于0.90且macro `0.9420`低于0.95，relation gate失败。
+- None FPR `0.0201`、none->goal `0`，五个predicted classes非空；none deployment gate继续通过。Fresh random中left/valley recalls为0.969/0.949，主要失败集中在energy right-climb被判valley或goal。
+- 五类联系表人工通过。模型、data与seeds均在lockbox前冻结；该fail不能用于重训或改right boundary。按预注册停止MountainCar metric搜索，不进入online reward control。
+
+> [里程碑]
+> Fresh lockbox给出稳定结论：learned metric已把none假阳性从67%压到约2%，但right-climb在自然成功轨迹上只有86% recall。Balanced synthetic pairs不足以保证自然时序部署；下一实验结构必须把**trajectory-level coverage**作为开发协议的一部分，同时保留独立fresh trajectory lockbox，而不是继续在MountainCar上调分类器。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3819,6 +3831,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 证据：2,560 development与1,280 fresh lockbox hashes零重叠；model参数在生成lockbox前提交。
 - 结果：fresh accuracy/macro 0.9922，最低none recall 0.9805，goal 1.0。
 - 决定：冻结model，允许运行预注册fresh natural seeds；禁止用balanced lockbox labels重训或校准。
+
+### D-050：Fresh Natural Lockbox 否决 MountainCar Metric
+
+- 日期：2026-07-22
+- 证据：全新environment/action seeds，61,384 transitions，coverage和manual gates通过。
+- 结果：none FPR 0.0201、goal recall 0.984；left/valley/right 0.975/0.949/0.860，relation macro 0.9420。
+- 决定：right与macro gates失败，停止MountainCar metric搜索且不接online reward。保留“balanced synthetic + development trajectories + fresh trajectory lockbox”作为下一环境的实验结构。
 
 ## 实验日志
 
