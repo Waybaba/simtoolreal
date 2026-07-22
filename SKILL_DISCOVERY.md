@@ -3091,7 +3091,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/stratified_none_capacity_2
 
 ## Phase 5ZZ：Visible Valley-threshold Stratified None
 
-状态：`capacity通过；正式data未生成`
+状态：`capacity与正式data通过；balanced未运行`
 
 这是冻结三维feature+1-NN路线允许的最后一次none采样修订。Phase 5ZY八层中只替换失败的`valley_threshold`：accepted next position仍为`(-0.75,0.0)`，velocity从`[-0.005,0.005)`改为两个固定区间`[-0.005,-0.001] union [0.001,0.005)`；previous proposals、action及其他七层完全不变。`0.001`按MountainCar约600像素/1.8 position span对应约0.33像素位移量级，在新run前冻结，不从failed samples搜索最优cutoff。
 
@@ -3113,6 +3113,18 @@ Run：`outputs/skill_discovery/mountaincar_continuous/visible_stratified_none_ca
 
 > [里程碑]
 > 最小可见速度修订通过了预注册capacity gate，且没有改变其他七层。下一步只生成冻结的32×8 reference/audit，不再修改层定义。
+
+### Phase 5ZZ Dataset 结果：八层正式 Shard 通过
+
+Run：`outputs/skill_discovery/mountaincar_continuous/visible_stratified_none_dataset_20260722_172219`
+
+- Reference/audit严格使用`8,300,007/9,300,007`，每层各32；两侧各256个unique pair hashes，跨split及与四relation shards均零重叠。
+- 八层predicate、terminated flags、finite values、RGB shape和总512个unique pairs全部通过。各层收集attempts为reference `43/63/38/94/35/77/38/85`、audit `45/67/37/113/39/80/39/65`，没有触及预算上限。
+- 8行联系表人工通过：每行依次为reference before/after与audit before/after，位置和运动方向符合冻结层定义。
+- Dataset final gate通过；尚未计算balanced five-class分数，也未运行natural rollout。
+
+> [里程碑]
+> Phase 5ZZ 已得到与四正类完全隔离、分层配额精确的正式none shard。下一步直接调用冻结评估器，结果不再触发采样或feature修改。
 
 ## Phase 6：迁移到 Hammer
 
