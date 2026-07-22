@@ -2085,12 +2085,44 @@ Run：`doorkey5_tabular_balanced_control_seed7_20260722_111420`
 
 ## Phase 5ZA：DoorKey State-changing Action Mask
 
-状态：`20k单变量control diagnostic计划已冻结，尚未运行`
+状态：`20k单变量control完成；furthest-stage gate通过，发现door final-state限制`
 
 - 完全复用Phase 5Z seed 7、20k、64 horizon、CRN layouts、reward matrix、Q update、epsilon、checkpoints、evaluation和0.80 gate。唯一变化是training/evaluation都在每个state屏蔽不会改变环境的actions。
 - Left/right始终有效；forward仅在front cell为空或可overlap时有效；pickup仅在未携带物体且front object可pickup时有效；toggle仅在front为door且当前能够改变door状态时有效。所有保留动作仍是官方MiniGrid actions，不加入solver或高层macro。
 - 预注册预测是door final高于0.594且不再出现carrying后重复pickup；四target rates、goal native success与last-3仍需各 `>=0.80`。
 - 若通过，action abstraction成为后续DoorKey discovery固定接口；若失败，不扩大mask或预算，检查door post-open stopping与Q-value分布。
+
+### 20k Action-mask 结果
+
+Run：`doorkey5_tabular_balanced_control_actionmask_seed7_20260722_112434`
+
+| Episodes | Navigation | Key | Door | Goal/native | Gate |
+| ---: | ---: | ---: | ---: | ---: | :---: |
+| 4k | 1.000 | 1.000 | 1.000 | 0.000 | fail |
+| 8k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 12k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 18k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 19k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 20k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| Independent final | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+
+- Furthest-stage与last-3 gate完整通过；door从无mask final 0.594恢复到1.0，证明invalid-action self-loop是Phase 5Z collapse的主因。Final 3x3以外的四阶段outcome matrix为identity。
+- Goal平均9.81步并使用native termination；key/door代表轨迹真实pickup和toggle，navigation不接触key。State-changing mask固定为后续DoorKey接口。
+- 但人工检查发现door代表trajectory打开门后又在64步内关闭，manifest final `door_open=false`。Furthest stage=door仍是真实历史事件，所以不撤销本run预注册pass；然而该policy未证明能把“门保持打开”的state交给下游controller。
+
+![DoorKey action-mask control audit](outputs/skill_discovery/minigrid_doorkey_training/doorkey5_tabular_balanced_control_actionmask_seed7_20260722_112434/policy_rollout_audit.png)
+
+> [方向变化]
+> 在online discovery前增加final-state persistence gate。过去的furthest-stage metric适合证明事件发生，却不足以证明intermediate skill是可组合option；这与早期Hammer“高success但没有真正保持操作结果”的问题同类。
+
+## Phase 5ZB：DoorKey Final-state Persistence Audit
+
+状态：`evaluation-only计划已冻结，尚未运行`
+
+- 只加载Phase 5ZA final Q，不训练。使用独立 `seed+1,100,000` 的512 common layouts/skill，保留64步evaluation horizon和state-changing mask。
+- 同时报告furthest stage与final state。Navigation要求furthest=0；key要求final carrying key且door closed；door要求final door open且未native goal termination；goal要求native success。
+- 四个final-state rates各 `>=0.80` 才允许进入discovery。Audit不能修改Phase 5ZA furthest-stage pass，只增加option compositionality证据。
+- 若door persistence失败，不调reward或预算；下一单变量是target-reaching option termination：key/door skills首次达到其target后立即结束，而navigation保持horizon、goal使用native termination。
 
 ## Phase 6：迁移到 Hammer
 
