@@ -2176,7 +2176,7 @@ Run：`doorkey5_tabular_balanced_control_actionmask_optionterm_seed7_20260722_11
 
 ## Phase 5ZD：DoorKey Online Discovery + Frozen Option Policy
 
-状态：`seed 7完整实验协议已冻结，尚未运行`
+状态：`seed 7完整通过；seeds 17/29待复现`
 
 - 研究问题只改一个边界：Phase 5ZC的固定oracle reward rows由online semantic-spread bootstrap替代。环境仍为官方 `MiniGrid-DoorKey-5x5-v0`，compact state、五个official actions、state-changing mask、64-step horizon、tabular Q update和common-random layouts全部不变。
 - 总预算仍为20k episodes：前5k bootstrap按四skills轮转，使用furthest semantic-stage occupancy的decayed DIAYN posterior加global coverage reward；`pseudocount=2`、`semantic_decay=0.9995`、coverage weight=1。Bootstrap不使用target、option termination、native reward、scripted solver、macro或imitation。
@@ -2186,6 +2186,32 @@ Run：`doorkey5_tabular_balanced_control_actionmask_optionterm_seed7_20260722_11
 - Policy checkpoints固定为3k/6k/9k/13k/14k/15k，每次512 common layouts/skill；independent final另用512 layouts/skill。按bootstrap assignment同时报告4x4 outcome matrix、assigned furthest rates、assigned final-state rates和goal native success。
 - 完整gate要求四个assigned furthest rates、四个assigned final-state rates及goal native success各 `>=0.80`，且13k/14k/15k全部通过。接触表和manifest必须人工确认拿钥匙、门保持open和native goal；只达到历史事件不能替代最终状态交付。
 - Seed 7完整通过后才运行seeds 17/29；若seed 7失败，先按bootstrap coverage、assignment collision、replay truncation或post-bootstrap policy四类定位并保留正式失败，不进入IsaacLab。
+
+### Seed 7完整结果
+
+Run：`doorkey5_online_spread_balanced_transition_replay_seed7_20260722_115157`
+
+Bootstrap在5k后得到independent top stages `[2,1,0,3]`，即skill顺序为door/key/navigation/goal。四rows已经是一一对应，global assignment保留相同顺序；本seed没有发生assignment collision，也不把balanced solver描述成成功原因。
+
+| Policy episodes | Door | Key | Navigation | Goal/native | Final-state gate |
+| ---: | ---: | ---: | ---: | ---: | :---: |
+| 3k | 1.000 | 1.000 | 1.000 | 0.926 | pass |
+| 6k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 9k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 13k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 14k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| 15k | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+| Independent final | 1.000 | 1.000 | 1.000 | 1.000 | pass |
+
+- Bootstrap real transition counts为navigation→key `3943`、key→door `3308`、door→goal `2024`；direct graph为 `[]/[0]/[1]/[2]`，transitive ancestors为 `[]/[0]/[0,1]/[0,1,2]`，远高于25-count structural gate。
+- Frozen rows按发现顺序成为door `[0,0,1,-1]`、key `[0,1,-1,-1]`、navigation `[1,-1,-1,-1]`、goal `[0,0,0,1]`。Replay共5k episodes/189361 transitions，其中1680条intermediate-target trajectories在首次到达处截断。
+- Independent final的door/key/navigation/goal平均步数为5.31/2.35/64/9.81。四项furthest与final-state rates均1.000，goal native success 1.000，last-3全通过。
+- 人工检查manifest和contact sheet：skill 0在第4步真实开门并保持open，skill 1在第2步携带yellow key且门closed，skill 2完整64步不接触key，skill 3在第8步进入goal并native terminate。
+
+![DoorKey discovered option audit](outputs/skill_discovery/minigrid_doorkey_training/doorkey5_online_spread_balanced_transition_replay_seed7_20260722_115157/policy_rollout_audit.png)
+
+> [里程碑]
+> DoorKey第一次在非identity、非oracle assignment下通过完整发现到控制链：online spread自行分出door/key/navigation/goal，冻结后的transition-aware rows和option contract在所有后期checkpoints及independent final同时交付正确最终状态。Seed 7只证明可行性，不证明robustness；按预注册继续seeds 17/29，不回头调整超参数。
 
 ## Phase 6：迁移到 Hammer
 
