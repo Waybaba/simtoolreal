@@ -3247,7 +3247,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/isotonic_state_decoder_202
 
 ## Phase 7A：Fresh Balanced + Natural Lockbox
 
-状态：`预注册；未生成lockbox`
+状态：`fresh balanced lockbox已冻结；development model未训练`
 
 Phase 5ZZ的reference/audit已经被多次模型分析，从本阶段起合并为development（每类512），不再声称是holdout。Phase 7A在看任何新样本前同时冻结最终model、fresh balanced lockbox及fresh natural lockbox；最终只允许一次顺序评估。
 
@@ -3270,6 +3270,18 @@ Phase 5ZZ的reference/audit已经被多次模型分析，从本阶段起合并�
 
 > [大计划]
 > 先实现并生成hash-isolated full-RGB balanced lockbox，人工确认后冻结artifact；再fit development model并做唯一一次balanced evaluation。通过才实现fresh natural adapter。长命令按约300秒阻塞等待。
+
+### Phase 7A Lockbox Data 结果：1,280 个全新 RGB Pairs
+
+Run：`outputs/skill_discovery/mountaincar_continuous/lockbox_dataset_20260722_174518`
+
+- 四relations各256、none八层各32，总计五类各256。Lockbox有1,280个unique pair hashes，与此前3,072个positive/uniform-none/stratified-none hashes零重叠。
+- Official predicates、full-RGB shape、finite values及frozen-background car-motion feature gates全部通过；features为`lockbox_car_motion_features.npz`。
+- 五类联系表和八层none联系表均人工通过；方向、位置及goal/none语义可读。Full RGB/state/action/next state/labels按五个shards保存。
+- Lockbox artifact现已冻结；尚未fit development HistGradientBoosting，也没有查看任何lockbox prediction。
+
+> [里程碑]
+> 开发集与最终证据重新隔离：新balanced lockbox没有复用此前看过的任何pair。下一步只按已提交参数fit一次development model并评估该artifact。
 
 ## Phase 6：迁移到 Hammer
 
