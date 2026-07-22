@@ -1930,7 +1930,7 @@ Artifact：`gotoobject_blockwise_spread_replay_seed7_20260722_101916/final_polic
 
 ## Phase 5V：Integrated Replay Multi-seed Replication
 
-状态：`3-seed formal计划已冻结，尚未运行`
+状态：`3-seed formal完成；1/3通过，multi-seed gate失败`
 
 - Training seeds预先固定为 `7/17/29`，不因bootstrap collision或训练失败替换seed。三个runs可并行，但配置逐值相同。
 - 每个seed完整运行5k online semantic-spread bootstrap、permutation gate、runner-up/top calibration、一次320k以内的reverse relabel replay，以及15k fixed-CRN frozen-policy training。总environment budget仍为20k/seed。
@@ -1939,6 +1939,25 @@ Artifact：`gotoobject_blockwise_spread_replay_seed7_20260722_101916/final_polic
 - 每个seed的pass gate要求independent final far/adjacent/carried各 `>=0.90`，且13k/14k/15k三个checkpoints全部通过。Multi-seed method gate要求3/3 seeds通过；assignment row顺序可以不同，但matched stages必须完整。
 - 保存每个run的全部Phase 5T artifacts，并生成一个multi-seed summary，报告bootstrap assignments、每类mean/std/worst、每seed final/last-3和失败原因。三个代表rollout都需核对真实pickup。
 - 若2/3或更少通过，不补seed、不增加replay sweep或预算；先比较失败发生在bootstrap assignment还是policy generalization。只有3/3通过才把该小环境结构视为可迁移候选。
+
+### 3-seed 结果
+
+Summary：`gotoobject_blockwise_spread_replay_multiseed_7_17_29_20260722_103608.json`
+
+| Seed | Bootstrap assignment | Far | Adjacent | Carried | Last-3 | Run gate |
+| ---: | --- | ---: | ---: | ---: | :---: | :---: |
+| 7 | far / carried / adjacent | 0.971 | 0.971 | 0.955 | pass | pass |
+| 17 | adjacent / far / carried | 0.955 | 0.975 | 0.891 | fail | fail |
+| 29 | carried / carried / adjacent | - | - | - | no policy | fail |
+
+- Multi-seed gate为1/3，正式失败。Seed 29在5k bootstrap发生carried collision，按预注册规则没有强制assignment，也没有进入replay或policy phase。
+- Seed 17的13k/14k/15k carried为 `0.883/0.891/0.898`，independent final为0.891；这不是checkpoint位置问题。两个完成policy的seeds中carried mean/std/worst为 `0.923/0.032/0.891`。
+- Seed 17 calibrated carried row为 `[far=0, adjacent=-16.631, carried=1]`。它强烈惩罚pickup必经的adjacent predecessor；320k reverse replay的总relabel reward为 `-174552`，相对seed 7的 `+20344` 表明replay正在忠实放大坏landscape，而不是解决它。
+- Seed 29 raw matrix中skill0与skill1都局部偏好carried；一个全局maximum-weight permutation其实可以把rows分到far/carried/adjacent，但当前独立argmax gate没有balanced assignment机制。
+- Seed 7和17的代表图像均核对真实pickup，seed 17 carried manifest为 `carrying=[ball, purple]`且floor objects `2->1`。失败仍位于discovery/reward结构，不是metric绕过。
+
+> [方向变化]
+> 不再增加replay sweep或policy budget。Multi-seed证据暴露两个正交缺口：(1) independent row argmax会产生assignment collision；(2) row-affine calibration可能极度惩罚通往top stage的观测前驱。下一步先在三个已保存bootstrap artifacts上做offline、无训练的balanced assignment与transition-predecessor audit；只有该规则能同时修复seed 17/29且不破坏seed 7时，才考虑新的integrated runs。
 
 ## Phase 6：迁移到 Hammer
 
