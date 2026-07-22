@@ -2632,7 +2632,7 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 
 ## Phase 6：迁移到 Hammer
 
-状态：`数据审计完成；等待最小同步补录`
+状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
 
 只有小环境已经回答以下问题后才进入 Hammer：metric 有效、reward 可训练、object interaction 不会被绕过、视觉 embedding 可以缓存。
 
@@ -2699,6 +2699,37 @@ Primary gate：
 仓库已有`simtoolreal-isaaclab:latest`隔离Docker runtime也做了单卡复测，但它在同一`librtx.scenedb.plugin`位置崩溃，未创建env或视频。这说明当前Docker镜像并不是可绕过该渲染问题的旧runtime；Docker视频回退作废。
 
 按预注册，Hammer object-centric/VLM正式gate保持`未运行/硬件阻断`，不得用历史错配数据替代。仍可完成一个独立的state-only复现：四个checkpoint分别在四张GPU运行一个256步headless physics rollout，env0原始pose逐步写入JSONL。它只回答旧策略是否真实移动、抬升和接近目标，不回答视觉表示是否有效。
+
+### Phase 6B.2：四检查点同步 State-only 复现
+
+四张GPU并行运行现有圆柄策略的`u1325/u1700/u2200/u2600`检查点，分别使用seeds `7/17/29/37`。每个run完整执行一个256-step update；trajectory主段固定为env0的前240步，第二段只保存剩余16步。策略学习率固定为0，因此审计的是恢复后的checkpoint行为，不是继续训练后的行为。
+
+主段run ids：
+
+- `hammer_sync_early_state_u1325_seed7_gpu0_20260722_142502`
+- `hammer_sync_middle_state_u1700_seed17_gpu1_20260722_142502`
+- `hammer_sync_late_state_u2200_seed29_gpu2_20260722_142502`
+- `hammer_sync_final_state_u2600_seed37_gpu3_20260722_142502`
+
+四段全部满足：240帧、只记录env0、control step逐帧连续、episode step为1到240、无reset/done、table pose稳定、manifest/summary帧数一致。由于是state-only模式，`video_path=null`是预期状态，不代表同步视频gate通过。
+
+Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > lifting_bonus_threshold`。本批配置`lifting_bonus_threshold=0.08`且reset z noise为0，因此真实条件为`object_z - object_init_z > 0.03 m`，其中`object_init_z = table_z + table_object_z_offset`。指尖邻近采用五个distal fingertip pose与圆柄/锤头几何的最短距离，3 cm仅作为抓握诊断代理，不替代contact force。
+
+| checkpoint | max rise | max table XY | min goal dist | true-lift frames | lift + fingertip proxy | strict 4 cm position | 结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| u1325 | 0.0049 m | 0.0662 m | 0.0756 m | 0 | 0 | 0 | 只在桌面推动 |
+| u1700 | 0.0538 m | 0.0208 m | 0.0605 m | 6 | 0 | 0 | 第1帧即越lift阈值，随后落下；非抓握瞬态 |
+| u2200 | 0.0224 m | 0.0108 m | 0.0658 m | 0 | 0 | 0 | 无有效移动/抬升 |
+| u2600 | 0.1400 m | 0.0627 m | 0.0580 m | 240 | 0 | 0 | 第1帧已抬高且指尖始终远离；非抓握升高 |
+
+960帧合计得到`rest/moved_on_table/lifted_far/near_goal_7cm = 494/220/240/6`，但后两类全部来自没有指尖邻近证据的起始物理瞬态或非抓握升高。四条env0轨迹的legacy success最大值也都是0。最重要的正式结论是：**没有一条轨迹同时出现真实抬升和指尖邻近，也没有一条进入严格4 cm位置区。** 因此这批checkpoint没有在同步env0复现出抓取放置成功，旧训练曲线的高success不能据此获得验证。
+
+可复现脚本：`skill_discovery/analyze_hammer_state_rollouts.py`。正式artifact：`outputs/skill_discovery/hammer_sync/hammer_state_audit_20260722_143513/audit.json`、逐帧`frames.csv`和`hammer_state_audit.svg`。
+
+![Hammer synchronized state audit](outputs/skill_discovery/hammer_sync/hammer_state_audit_20260722_143513/hammer_state_audit.svg)
+
+> [里程碑]
+> Isaac Lab 5.1物理迁移与四条完整state rollout均已跑通，但旧圆柄策略没有在所选env0轨迹中复现抓握放置。视觉表示gate仍因本机RTX renderer崩溃而未运行；不能用state stage coverage代替object-centric/VLM结果。
 
 ## Phase 7：组合性与下游任务
 
@@ -2990,6 +3021,14 @@ Primary gate：
 - Random 10,240 episodes 中 carried furthest 5,977，三 relation 自然可达且不需要长层级探索。
 - 限制：full renderer 只显示 floor object 消失，不在 agent 上显示 carrying；视觉方法必须用 trajectory。
 - 决定：先用无 mission/type/color 的 compact relational key 跑 100k balanced-oracle control gate；通过前不跑 semantic DIAYN/PPO。
+
+### D-032：Hammer Physics 可运行，但旧策略未复现抓握放置
+
+- 日期：2026-07-22
+- 证据：四个checkpoint各完成一个256-step state-only update；四条env0主段共960帧，全部通过同步与完整性gate。
+- 结果：`u1325/u2200`没有真实抬升；`u1700/u2600`的越阈值高度从第1帧开始，且抬升帧没有3 cm指尖几何邻近。四条轨迹严格4 cm位置成功均为0。
+- 决定：旧curve、sticky lift和不同env的视频都不能证明抓取成功。保留physics migration pass，但Hammer视觉metric不运行、不降gate，直到有支持Isaac Sim 5.1 RTX renderer的机器或可工作的旧渲染runtime。
+- 下一步：不继续消耗GPU重跑同一无渲染策略；当前研究主线回到已通过的小环境证据和object-centric representation设计。
 
 ## 实验日志
 
