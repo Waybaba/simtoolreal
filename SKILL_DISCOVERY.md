@@ -3139,6 +3139,27 @@ Run：`outputs/skill_discovery/mountaincar_continuous/explicit_none_20260722_172
 > [里程碑]
 > MountainCar关系metric的失败边界已定位：RGB能够高精度恢复位置与位移，但简单1-NN无法在三个语义速度阈值附近同时保持正类与none recall。下一研究阶段必须更换metric family，而不是继续补reference样本。
 
+## Phase 6A：Frozen Visual Decision Tree
+
+状态：`预注册；未训练`
+
+Phase 6A冻结Phase 5ZZ的五类dataset、pair-hash splits、median background和三维RGB car-motion features，只把Euclidean 1-NN替换为一个监督decision tree。它仍只消费RGB-derived `[x_t,x_t+1,delta]`，不读取state、action、oracle predicate或natural rollout labels。环境内已有scikit-learn `1.8.0`。
+
+### Frozen Model 与 Balanced Gate
+
+- 训练集固定为Phase 5ZZ reference：none及四relations各256；audit同样各256且只用于一次final balanced evaluation。Input使用`explicit_none_20260722_172340/five_class_car_motion_features.npz`，不重新提取或归一化feature。
+- `DecisionTreeClassifier`固定`criterion="entropy"`、`splitter="best"`、`max_depth=8`、`min_samples_split=2`、`min_samples_leaf=8`、`max_features=None`、`class_weight=None`、`ccp_alpha=0`、`random_state=10,100,007`。不做CV、grid search、pruning path或audit-driven threshold。
+- 输出并保存model、`export_text`规则、node count、actual depth、feature importances和5x5 confusion。Balanced gate保持accuracy/macro各`>=0.98`、五类recall各`>=0.95`、五个predicted classes非空。
+
+### Paired Natural Gate
+
+- Balanced gate通过后才实现model rollout adapter；使用Phase 5ZW完全相同的128 energy、256x200 random、environment/action seeds、4 workers和61,382-transition coverage协议。
+- Tree直接输出五类，不加confidence rejection、temperature、class margin或后处理。Natural gates保持relation macro `>=0.95`、各`>=0.90`、goal `>=0.95`、none recall `>=0.90`、none->goal `<=0.01`及五个predicted classes非空。
+- 若balanced失败，记录后关闭该tree配置；不能调depth/leaf。若balanced通过而natural失败，保留confusion并停止，不用natural labels改树或data。只有两者通过才允许接visual reward control smoke。
+
+> [大计划]
+> 先实现只包含fit、balanced audit和tree export的CPU脚本。Balanced通过以前不实现或运行natural adapter；长任务继续按约300秒阻塞等待。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
