@@ -2374,6 +2374,16 @@ Groups 57/67各运行256 common layouts x四skills，候选池分别包含约18.
 > [失败记录]
 > Scripted endpoints上1.0的DINO temporal-delta不能zero-shot覆盖真实policy-state distribution，主因是door-open class内部agent pose/motion变化。按预注册停止online visual cache，不重新fit centers、不换K、不在groups 57/67上改选择规则。DINO current的0.951只作为新假设，必须在全新groups上另行预注册验证。
 
+## Phase 5ZI：DINO Current Fresh-group Confirmation
+
+状态：`post-hoc假设的独立确认协议已冻结，尚未运行`
+
+- Phase 5ZH诊断显示frozen DINO current在groups 57/67为0.951，但它不是当轮预注册主方法。新阶段明确把“DoorKey semantic stage更适合current foundation state而非endpoint temporal direction”作为独立假设，不改DINO、KMeans `K=4`、centers或cluster mapping。
+- 使用全新generation groups `77/87`，与train `7/17/27`、endpoint audit `37/47`、首次policy-state audit `57/67`全部隔离。数据生成仍为每group 256 common layouts x四skills，并各stage reservoir 128条，共1024 samples。
+- Primary固定为 `dinov2_current`；其他representations只报告诊断。Zero-refit gate沿用Phase 5ZH，不降低：overall accuracy `>=0.85`、四stage recalls各 `>=0.75`、groups 77/87各accuracy `>=0.80`、四clusters非空。
+- Current representation不使用reset frame计算feature，但dataset仍保存reset/current pair以保持审计一致；labels仍只用于balanced sampling和evaluation，不进入DINO、nearest-center assignment或policy。
+- 若fresh groups通过，下一大计划才定义online finite-state visual lookup和无label cluster reward；若失败，停止DoorKey visual online分支，不再从同一五种representations中轮换选择。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`后续`
