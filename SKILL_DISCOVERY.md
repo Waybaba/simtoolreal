@@ -2868,7 +2868,7 @@ Failure artifact：`outputs/skill_discovery/mountaincar_continuous/visual_datase
 
 ## Phase 5ZU：MountainCar Frame-pair Capacity Survey
 
-状态：`预注册；未运行`
+状态：`完成；四类frame-pair capacity gate全部通过`
 
 本阶段仍不生成正式dataset、不编码DINO、不训练policy。它只审计官方transition对应的`(RGB_t, RGB_t+1)`能否提供足够多的rendered equivalence classes，避免重演Phase 5ZT在采集末尾才发现容量不足。
 
@@ -2892,6 +2892,26 @@ Failure artifact：`outputs/skill_discovery/mountaincar_continuous/visual_datase
 
 > [大计划]
 > 四类可并行做CPU渲染，但Pygame全局状态不在线程间共享；实现为四个独立进程或顺序审计。命令运行时用约300秒阻塞等待，不高频检查。
+
+### Phase 5ZU 结果
+
+Run：`outputs/skill_discovery/mountaincar_continuous/frame_pair_capacity_20260722_164317`
+
+| Class | Accepted / attempts | Unique before | Unique after | Unique pairs | Motion visible |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| left_momentum | 8,192 / 9,309 | 1,452 | 1,478 | **7,936** | 1.000 |
+| valley_return | 8,192 / 8,768 | 1,877 | 1,879 | **7,865** | 1.000 |
+| right_climb | 8,192 / 9,134 | 1,500 | 1,445 | **7,927** | 1.000 |
+| native_goal | 8,192 / 15,394 | 195 | 159 | **4,902** | 1.000 |
+
+- 四类pair capacity均远高于预注册1,024，finite/predicate/motion gates全部通过。并行四个独立Pygame processes完成，无共享renderer state。
+- Native-goal再次显示单帧容量低，但before/after组合把运动方向带入视觉后，从159--195个单帧hashes扩展为4,902个pair hashes。这直接修复Phase 5ZT的数据容量问题，而不是降低unique quota。
+- 三组before/after联系表逐类人工检查：left momentum向左，valley return与right climb向右，native goal越过flag侧峰顶；画面和冻结关系一致。
+
+![MountainCar frame-pair capacity audit](outputs/skill_discovery/mountaincar_continuous/frame_pair_capacity_20260722_164317/frame_pair_capacity_contact_sheet.png)
+
+> [里程碑]
+> Frame pair把MountainCar中单帧不可见的运动方向变成可审计视觉信号，并为四类都提供至少4,902种rendered equivalence classes。现在可以安全预注册256+256/class的balanced transition dataset；这仍只证明信息容量，不代表任何视觉metric或skill policy已通过。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3339,6 +3359,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 失败：reference goal-region收满256后，audit在100,000次尝试内无法收满另外256个disjoint hashes；data gate失败，DINO未运行。
 - 诊断：对冻结goal interval扫描8,192个positions只有289个unique RGB，低于协议要求的512。Velocity不进入renderer，不能提供额外视觉variation。
 - 决定：保留失败，不减quota、不复用hash、不扩大区间。任何下一dataset计划必须先审计各stage的rendered hash capacity，并优先考虑frame-pair表示真实velocity/momentum。
+
+### D-039：Frame Pair 恢复 Goal Transition 容量
+
+- 日期：2026-07-22
+- 证据：四类各8,192个合法transitions；unique pair hashes为`7,936/7,865/7,927/4,902`，motion-visible rate全1.0。
+- 解释：native-goal单帧before/after分别只有195/159种，但有方向的组合产生4,902种pair，超过正式dataset所需512并保留充足余量。
+- 决定：允许下一阶段预注册balanced frame-pair dataset；candidate必须从RGB pair恢复position与delta，不能读取velocity state。
 
 ## 实验日志
 
