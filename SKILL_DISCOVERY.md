@@ -1748,11 +1748,24 @@ Run：`gotoobject_balanced_occupancy_seed7_formal_20260722_080420`
 
 ## Phase 5Q：Block-wise Calibrated Spread
 
-状态：`下一算法设计中，尚未冻结或运行`
+状态：`20k两时间尺度计划已冻结，尚未运行`
 
-- 目标是把Phase 5P的post-hoc成功结构变成online algorithm：discriminator/count update与policy update采用block-wise freeze或EM-style两时间尺度，而不是每步共同漂移。
-- 正式计划必须同时解决training layout公平性：同一个三skill cycle使用common-random-number layout，避免skill index绑定不同seed residue。
-- 下一次运行前需要冻结：bootstrap block、matrix snapshot频率、row calibration、assignment collision处理、是否重置/继承Q以及20k pass/fail gate。未冻结前不继续tabular reward-shaping sweep。
+### 算法契约
+
+- 总预算固定20k episodes，不复用Phase 5L/5P artifact。前5k为online `semantic_spread` bootstrap，后15k为frozen-policy phase。
+- Training layouts使用common random numbers：同一个三skill cycle共享同一个environment seed，使skill index不再绑定不同layout residue。Actions仍由各skill自己的Q row与共同RNG序列产生。
+- Bootstrap使用occupancy reward、原online decayed counts、`N^-0.6` Q update；epsilon在5k bootstrap内部独立从1退火到0，前80%线性下降。
+- 5k边界从bootstrap decayed counts计算semantic-spread 3x3 matrix。三个rows的top stages必须恰好构成一个permutation；若collision，bootstrap gate直接失败并保存counts/matrix，不强制指定stage，也不进入policy phase。
+- Bootstrap gate通过后，对每个row做Phase 5O的runner-up→0、top→1 affine calibration。Matrix立即冻结；bootstrap Q table与visits全部丢弃，fresh policy Q从零开始，避免online旧reward残留。
+- Frozen-policy phase为15k episodes，occupancy timing与`N^-0.6`不变；epsilon在这15k内部重新从1退火到0，前80%线性下降。Active reward只读frozen matrix。
+- Policy phase仍维护一份shadow semantic-spread counts，用于审计若继续online更新时matrix会如何漂移；shadow结果不参与active reward或Q target。
+
+### 评估与门控
+
+- Frozen-policy phase每3k episodes评估一次，共5个checkpoints；每次512 common-random-number layouts/skill，独立final另用512 layouts/skill。
+- Final far/adjacent/carried matched rates各 `>=0.90`，且policy-phase last-3 checkpoints全部通过。仍人工核对carried object removal、`carrying` state和三条代表轨迹。
+- 保存bootstrap counts/raw matrix/top-stage permutation、calibrated frozen matrix、Q/visits、shadow final counts/matrix、5个checkpoints、SVG、PNG与manifest。
+- 若bootstrap collision或final gate失败，不改bootstrap长度、block比例或threshold；先根据保存的raw/shadow matrices判断是早期assignment形成失败还是policy phase失败。
 
 ## Phase 6：迁移到 Hammer
 
