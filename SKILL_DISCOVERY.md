@@ -3219,6 +3219,20 @@ Run：`outputs/skill_discovery/mountaincar_continuous/visual_state_decoder_20260
 > [里程碑]
 > RGB centroid含有足够relation信息，但单个global polynomial不是满足连续精度门槛的state decoder。Phase 6B停止；下一候选若继续continuous route，必须换成预注册的monotonic local calibration并显式处理official left-boundary clipping，而不是调本次多项式。
 
+## Phase 6C：Monotonic Local Visual Calibration
+
+状态：`预注册；未训练`
+
+这是continuous centroid decoder路线的最后一个候选。Data、splits、RGB centroids、targets及所有gates冻结为Phase 6B；只把global cubic Ridge替换为无knot超参数的local monotonic calibration，并加入official MountainCar minimum-position clipping对应的确定性velocity reset。
+
+- Decoder固定`IsotonicRegression(increasing=True, y_min=-1.2, y_max=0.6, out_of_bounds="clip")`，仍用reference before/after合并的2,560 scalar rows；不bin、不subsample、不看audit选择knots或平滑。
+- 分别解码before/after position，raw velocity为差值。唯一修正固定为：若decoded after `<=-1.199`且raw velocity `<0`，next velocity置0；其他位置不加offset或margin。该规则对应official left-wall clip，在新run前冻结。
+- Audit regression gates完全沿用Phase 6B：position MAE/p99 `<=0.0015/0.0040`，velocity `<=0.00075/0.0020`。Decoded relation规则与balanced gates也完全不变。
+- Balanced通过才实现paired natural adapter，natural协议/gates保持Phase 6A。若regression、balanced或natural任一失败，关闭continuous centroid decoder路线，不再换PCHIP、knots或边界容差。
+
+> [大计划]
+> 先做reference-only isotonic fit和balanced audit；通过前不实现natural adapter。所有长命令继续按约300秒阻塞等待。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
