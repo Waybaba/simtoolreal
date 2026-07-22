@@ -2965,7 +2965,7 @@ Run：`outputs/skill_discovery/mountaincar_continuous/frame_pair_capacity_202607
 
 ## Phase 5ZW：Natural-rollout None/OOD Rejection
 
-状态：`预注册；未运行`
+状态：`完成；coverage通过，relation与false-positive gates失败`
 
 ### Frozen Deployment Rule
 
@@ -2990,6 +2990,19 @@ Run：`outputs/skill_discovery/mountaincar_continuous/frame_pair_capacity_202607
 
 > [大计划]
 > 四个CPU workers分摊episodes，按小batch提取RGB feature并立即丢弃frames，只保存confusion与少量联系表。运行期间按约300秒阻塞等待。
+
+### Phase 5ZW 结果：四正类 Rejection 不可部署
+
+Run：`outputs/skill_discovery/mountaincar_continuous/rollout_rejection_20260722_165939`
+
+- Max same-class LOO squared thresholds为left `1.15e-4`、valley `1.46e-4`、right `8.73e-5`、goal `1.64e-5`。Threshold完全由reference决定，没有看rollout labels。
+- 128条energy与256x200 random共61,382 transitions。Oracle counts为none 44,260、left 2,692、valley 13,173、right 1,129、goal 128；coverage gate完整通过。
+- Combined relation recalls为`0.992/0.988/0.895/0.961`，macro 0.959。Right低于预注册0.90，因此relation gate失败；goal仍较安全，none->goal rate为0。
+- 决定性失败是none rejection：29,737/44,260个none被接受，FPR **0.672**；其中939误报left、28,798误报valley。Energy none FPR为0.287，random为0.717，说明问题不是单一controller分布。
+- 联系表人工确认保留的none与四个正确relation样例可读，但这不能消除大量未保存false positives。Final gate为fail，不接online reward、不调LOO threshold。
+
+> [里程碑]
+> Balanced四类上的0.996 accuracy不能代表可部署metric：进入真实rollout后，四正类support把67.2%的普通transition吸收，尤其几乎都变成valley_return。Goal误报为0是好消息，但整体reward仍会被大量假阳性主导。下一阶段必须把`none`作为显式训练/reference class，而不是继续调rejection阈值。
 
 ## Phase 6：迁移到 Hammer
 
@@ -3452,6 +3465,13 @@ Lift标签直接复现环境源码定义：`0.05 + object_z - object_init_z > li
 - 结果：RGB car-motion accuracy/macro 0.996，四类recall最低0.988；DINO为0.695且native-goal recall 0。
 - 解释：固定2D场景需要保留小car的空间位置与局部位移，global image embedding不是自然选择。
 - 决定：candidate通过离线representation gate，但暂不作为reward；先审计natural-rollout none/OOD false positives并冻结rejection rule。
+
+### D-041：四正类 1-NN 在 Natural Rollout 产生 67% None FPR
+
+- 日期：2026-07-22
+- 证据：61,382 natural transitions，四relations均有至少128 positives、none 44,260；max-LOO threshold未使用rollout labels。
+- 结果：relation macro 0.959、goal recall 0.961、none->goal 0；但right recall 0.895，none总FPR 0.672，28,798个none被误报valley。
+- 决定：rejection gate失败，不接policy reward。下一唯一候选是显式balanced`none` reference class，并保留同一natural rollout协议做paired复测。
 
 ## 实验日志
 
