@@ -5,7 +5,7 @@
 >
 > 当前阶段：Phase 3 fixed-layout gate 已通过但 layout generalization 失败；Phase 4A 官方 MiniGrid 环境审计已通过，Phase 4B 正在定位长时序 PPO 的部署失败。
 >
-> 当前动作：Phase 4B balanced-oracle PPO v2 已完整运行。训练/随机策略能稳定到达 goal，但 deterministic policy 与四技能分化均失败；下一轮只移除 PPO entropy bonus，检验高熵策略是否是控制能力无法凝结为稳定 skill 的主因。
+> 当前动作：Phase 4C fixed-map public bridge 已完成：Semantic 与 Semantic spread 均 5/5，Random/Raw 均 0/5。下一步只审计同一官方 map 的 `is_slippery=true` 随机动力学与三 outcome 可控上界，审计后才冻结训练 gate。
 
 ## 一眼看完整流程
 
@@ -729,6 +729,180 @@ Run：`doorkey5_ppo_semantic_balanced_seed7_20260722_035431`
 - 若 stochastic/deterministic gap 缩小但 navigation/key skills 仍失败，下一步改为 stage-transition/potential reward，解决“到达后无法停留”的终局 credit；不追加训练步数追结果。
 - 若 goal controller 也退化，则 entropy 不是单一根因，保留失败并直接进入 transition-level objective，不做系数 sweep。
 
+### Phase 4B Training v2b 结果：失败
+
+Run：`doorkey5_ppo_semantic_balanced_ent0_seed7_20260722_041428`
+
+250,000 timesteps，训练主体用时 `282.4s`；target permutation 与 v2 相同。
+
+- Final deterministic 最佳 matched rates 为 `0.1836 / 0.0000 / 0.8789 / 0.0000`，所有 native goal success 为 0。
+- Final stochastic 最佳 matched rates 为 `0.4375 / 0.3438 / 0.3281 / 0.2812`；target-goal skill 0 的 native success 为 `0.4375`，明显低于 v2 的 `0.9844`。
+- 5 个 deterministic checkpoints 都没有 door/goal success；训练 stochastic rollouts 仍访问四 stages，但 skill-stage 分布接近混合。
+
+> [失败记录]
+> `ent_coef=0` 没有把 stochastic 能力凝结成 deterministic skills，反而削弱了稀疏奖励下的 goal 探索。停止 entropy 调参；v2b 证明 entropy 不是单一根因。
+
+### Phase 4B Training v3：Stage-Transition Potential 计划
+
+相对 v2 恢复 `ent_coef=0.01`，其余 PPO/环境/seed/预算/gate 不变；唯一 objective 变化是把 episode-end target indicator 改为阶段变化当下的 potential difference：
+
+`Phi(stage, target) = stage / target`，当 `target > 0` 且 `stage <= target`
+
+`Phi(stage, target) = 1 - (stage - target) / (3 - target)`，当 `stage > target`
+
+navigation target 的特例为 `Phi(stage, 0) = 1 - stage / 3`
+
+`r_t = Phi(furthest_stage_t, target) - Phi(furthest_stage_(t-1), target)`
+
+- Potential 始终位于 `[0,1]` 且 target 处为 1；到达 target 的累计正收益统一为 1，继续越过 key/door target 会即时扣回，避免不同 target 的 reward scale 不一致。
+- navigation target 初始不发正奖励，但任何后续语义推进都会即时受罚。
+- 只在真实 key pickup、door open、goal reach 导致 furthest stage 改变时非零；native reward 仍只用于 evaluation。
+- 若 deterministic 四类 gate 通过，说明 v2 的主障碍是 terminal credit/stopping；若 goal 通过但中间类失败，下一步专门处理可终止 skill option；若仍没有 goal，则停止 balanced-oracle PPO 调参并评估 imitation warm start 或 action abstraction。
+
+### Phase 4B Training v3 结果：失败并暂停 DoorKey
+
+Run：`doorkey5_ppo_semantic_balanced_transition_seed7_20260722_042543`
+
+250,000 timesteps，训练主体用时 `285.8s`。
+
+- Final deterministic 最佳 matched rates 为 `0.0000 / 0.0000 / 0.3125 / 1.0000`；这里的 1.0 是 navigation，door/goal 都为 0。
+- Final stochastic rollout 几乎全部终止在 `key_acquired`：四 skills 的 key rates 为 `1.0000 / 1.0000 / 0.9844 / 0.9375`，native goal 全部为 0。
+- 训练终局共约 1010 episodes，`key_acquired=889`、`door_opened=95`、`goal=18`。Immediate reward 成功放大了第一段 pickup，却使所有 skill 追逐容易的部分进度，仍不能建立后续控制。
+
+> [失败记录]
+> DoorKey v1-v3 已依次排查 global coverage、balanced terminal target、entropy 和 stage-transition credit。继续改 reward 或预算会变成同一 benchmark 的调参循环，因此按预注册规则暂停；DoorKey 保留为后续需要 action abstraction / imitation warm start 的 harder benchmark。
+
+## Phase 4C：FrozenLake 最小 Public Graphical Bridge
+
+状态：`环境审计与 balanced control 通过；准备 semantic spread`
+
+这个阶段不是替代 DoorKey，而是在它前面补回用户要求的“足够简单、非物理、基于图形”的第一层公开环境：
+
+1. 使用已安装 Gymnasium 的官方 `FrozenLake-v1`、默认 4x4 map、4 个离散动作；第一轮 `is_slippery=False`，不同时引入控制噪声。
+2. Episode 上限固定 32 steps，三种 mutually exclusive trajectory outcomes 为 `safe_timeout`、`hole_terminal`、`goal_terminal`。
+3. Native goal reward 只写入 evaluation info，不进入 discovery training。
+4. Policy observation 使用 agent tile one-hot + skill one-hot；第一轮固定官方 map，只做 public dynamics signal check，不声称 layout generalization。
+5. 使用 tabular Q-learning，不使用 neural PPO；这里要隔离 semantic objective，而不是再次测试 optimizer。
+
+Phase 4C Gate 与顺序：
+
+- 先验证官方 env reset/step/render、seed reproducibility，并用真实动作分别产生 safe timeout、hole、goal；保存 contact sheet。
+- 5 seeds random reachability 报告三类自然频率，scripted actions 只用于 audit，不进入训练。
+- Balanced oracle control 先跑单 seed；deterministic evaluation 三类都必须稳定复现，再运行无 target semantic spread。
+- Semantic spread 使用 `DIAYN + outcome occupancy entropy`，固定 coverage weight 1.0；至少 5 seeds 中 4 seeds 三类均通过，才称 public fixed-map signal 成立。
+- 通过后增加 `is_slippery=True` 或 map variation，一次只增加一个变量；不直接返回 Hammer。
+
+### Phase 4C 环境审计结果：通过
+
+Run：`frozenlake_audit_20260722_0444`
+
+- Gymnasium `FrozenLake-v1`：固定 4x4 map、16 states、4 actions、`is_slippery=false`、32-step limit，RGB render 为 `256x256`。
+- 5 seeds 的 scripted real actions 全部正确产生 safe timeout、hole terminal 和 native goal terminal；goal 路径只需 6 steps。
+- 10,000 random episodes 的 outcome counts 为 `safe_timeout=30`、`hole_terminal=9819`、`goal_terminal=151`。Hole 占 98.19%，两个语义结果都很稀有，适合检验 occupancy bias。
+- 联系表三行依次显示 timeout、落洞、到宝箱；人工检查状态、终止类型和 native reward 一致。
+
+![FrozenLake scripted outcome audit](outputs/skill_discovery/frozenlake/frozenlake_audit_20260722_0444/scripted_outcome_audit.png)
+
+### Phase 4C Balanced Control 结果：通过
+
+Run：`frozenlake_semantic_balanced_seed7_20260722_0452`
+
+30,000 episodes，tabular Q-learning 用时 `14.9s`。Seeded target mapping 为 skill `0/1/2 -> goal/safe/hole`。
+
+- Final deterministic matched outcome rates 为 `1.0 / 1.0 / 1.0`，goal native success 为 1.0。
+- 三类 trajectory lengths 分别为 goal 6、safe timeout 32、hole 2 steps。
+- Last 5 checkpoint stability gate 通过；policy rollout 画面与数值一一对应。
+
+![FrozenLake balanced policy audit](outputs/skill_discovery/frozenlake_training/frozenlake_semantic_balanced_seed7_20260722_0452/policy_rollout_audit.png)
+
+> [结果]
+> FrozenLake 的官方 dynamics、三 outcome evaluator 与 tabular control 上界均正常。下一项只移除人工 target mapping，改用与 Pusher-Cup 相同的 `semantic DIAYN + outcome occupancy entropy`，其他配置不变。
+
+### Phase 4C Semantic Spread v1：Final Pass，Stability Fail
+
+Run：`frozenlake_semantic_spread_seed7_20260722_0455`
+
+- Final deterministic matched outcome rates 为 `1.0 / 1.0 / 1.0`，goal native success 为 1.0；policy rollout 画面确认 goal、safe、hole 都是真实执行。
+- 28k、29k、30k 三个 checkpoints 全部通过；26k 仍缺 hole，27k 仍缺 safe，故代码中冻结的 last-5 stability gate 为 false，整体 signal gate 明确失败。
+- 原配置 epsilon 在 27k（总预算的 90%）才归零，30k 内客观上只有 3 个完整 zero-exploration checkpoints，无法满足 last-5 gate。
+
+![FrozenLake semantic spread v1 policy audit](outputs/skill_discovery/frozenlake_training/frozenlake_semantic_spread_seed7_20260722_0455/policy_rollout_audit.png)
+
+> [失败记录]
+> 不把最终 checkpoint 的 1.0 事后等同于稳定通过，也不把 stability gate 从 5 改成 3。v1 判定为 final policy 成功但完整 signal gate 失败。
+
+### Phase 4C Semantic Spread v1b：Zero-Exploration Stability 计划
+
+- 总预算仍为 30k，objective/reward/coverage weight/seed/Q-learning/evaluation/gate 均不变。
+- 唯一变量：`epsilon_decay_fraction: 0.90 -> 0.80`，即 24k 后 epsilon 为 0，留下 6 个完整 checkpoint 检验 last-5 stability。
+- 若 v1b 通过，再冻结该配置运行 5 seeds；若仍失败，判 semantic spread policy oscillation，不继续 sweep。
+
+### Phase 4C Semantic Spread v1b 结果：通过
+
+Run：`frozenlake_semantic_spread_eps80_seed7_20260722_0501`
+
+- Final deterministic matched rates 为 `1.0 / 1.0 / 1.0`，goal native success 1.0。
+- Last-5 checkpoint stability 与完整 signal gate 均通过。
+- 无人工 target mapping；最终 skill `0/1/2 -> hole/goal/safe`。三行 rollout 画面确认真实落洞、走到宝箱、持续安全到 timeout。
+
+![FrozenLake semantic spread v1b policy audit](outputs/skill_discovery/frozenlake_training/frozenlake_semantic_spread_eps80_seed7_20260722_0501/policy_rollout_audit.png)
+
+> [计划]
+> 固定 30k、epsilon decay 0.8、coverage weight 1.0 和全部 gate，不做 sweep；补四个预注册 seeds。至少 4/5 完整 signal gate 通过才进入 slippery dynamics。
+
+### Phase 4C Semantic Spread Multi-seed：通过
+
+Run group：`frozenlake_semantic_spread_multiseed_20260722_0510`
+
+- Seeds `7/17/27/37/47` 全部通过 final 3-outcome specialization、native goal 和 last-5 stability，完整 gate 为 **5/5**。
+- 每个 seed 的三类 matched rate mean 与 minimum 都为 `1.0 / 1.0 / 1.0`。
+- Skill permutation 随 seed 变化，排除固定 skill id 对应语义标签；联合重放 15 个 policies 均与 outcome 标签一致。
+
+![FrozenLake semantic spread multi-seed replay](outputs/skill_discovery/frozenlake_training/frozenlake_semantic_spread_multiseed_20260722_0510/multiseed_final_replay.png)
+
+### Phase 4C Frozen Baseline 计划
+
+固定 v1b 的 30k episodes、epsilon decay 0.8、Q-learning、5 seeds 与全部 evaluation，只替换 objective：
+
+- Random：零 intrinsic reward，检查初始/探索偏置。
+- Raw terminal DIAYN：按 terminal tile state 区分 skill，不加 semantic occupancy。
+- Plain Semantic DIAYN：按三 outcome 区分 skill，不加 occupancy entropy。
+- Semantic spread：使用刚完成的 frozen runs，不重跑。
+
+比较每种方法的 5-seed full-gate pass count、三 outcome matched rates、goal native success 和联合画面。Baseline 无需“必须失败”；若它也通过，结论必须收窄为本环境不需要 occupancy correction。
+
+### Phase 4C Frozen Baseline 结果
+
+Run group：`frozenlake_baselines_20260722_0515`
+
+| Method | Full gate | Safe mean | Hole mean | Goal mean | 结论 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Random | 0/5 | 0.000 | 1.000 | 0.038 | 几乎全部落洞 |
+| Raw terminal DIAYN | 0/5 | 0.000 | 1.000 | 0.400 | 区分多个 raw terminal tiles，但不保留 safe outcome |
+| Plain Semantic DIAYN | **5/5** | **1.000** | **1.000** | **1.000** | 三类稳定分化 |
+| Semantic spread | **5/5** | **1.000** | **1.000** | **1.000** | 三类稳定分化，但本环境未显示对 plain semantic 的额外收益 |
+
+联合重放人工检查与指标一致：Raw 的 15 个 skills 主要落入不同 holes，plain Semantic 与 Semantic spread 每个 seed 都各有 safe、hole、goal。
+
+![FrozenLake raw multi-seed replay](outputs/skill_discovery/frozenlake_training/frozenlake_baselines_20260722_0515/raw_summary_v2/multiseed_final_replay.png)
+
+![FrozenLake semantic multi-seed replay](outputs/skill_discovery/frozenlake_training/frozenlake_baselines_20260722_0515/semantic_summary_v2/multiseed_final_replay.png)
+
+> [结果]
+> Fixed deterministic public environment 支持 representation hypothesis：Raw endpoint diversity 追逐多个 hole tiles，而 trajectory-level semantic outcome 能公平表示 safe/hole/goal。它不支持“occupancy entropy 在所有环境都必要”；plain Semantic 已足够。
+
+## Phase 4D：FrozenLake Slippery Dynamics Audit
+
+状态：`只冻结环境审计，尚未冻结训练配置`
+
+唯一新增变量为 `is_slippery=true`；map、32-step horizon、三 outcome 定义与 native reward isolation 不变。训练前先完成：
+
+1. 验证官方 transition kernel 的随机性与 seed reproducibility。
+2. 10,000 random episodes 报告 safe/hole/goal 自然频率。
+3. 使用官方 `env.unwrapped.P` 做 32-step finite-horizon dynamic programming，分别计算最大 safe-timeout、hole-terminal、goal-terminal 概率上界；不把 scripted deterministic path 当作成功证据。
+4. 对每个 DP policy 做至少 5 seeds x 512 episodes Monte Carlo，确认 empirical rate 接近计算上界，并保存代表画面。
+5. 只有审计通过后，才按可控上界定义 balanced oracle 和 semantic methods 的 class-specific gate；不沿用 deterministic 0.95 gate。
+
 ## Phase 5：图像与 VLM Metric
 
 状态：`等待小环境通过`
@@ -976,6 +1150,28 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 - 定位：环境与 PPO 能产生 goal 行为；当前 high-entropy policy、terminal credit 和 stage stopping 共同妨碍稳定部署。
 - 下一步：只把 entropy coefficient 从 0.01 降至 0；若仍失败，转向 transition-level shaping，不做系数或预算 sweep。
 
+### D-021：v2b 排除 Entropy 单因，转向 Transition Credit
+
+- 日期：2026-07-22
+- Deterministic：door/goal 仍为 0；stochastic target-goal success 从 v2 的 0.984 降至 0.438。
+- 结论：entropy bonus 不是 deterministic failure 的单一原因，且对 sparse goal exploration 有帮助。
+- 决定：不扫描 entropy；恢复 0.01，只把 target reward 提前到真实 semantic stage transition，并用归一化 potential difference 处罚 overshoot。
+
+### D-022：DoorKey v3 失败，插入 FrozenLake 最小公开桥接
+
+- 日期：2026-07-22
+- v3 结果：stochastic policies 几乎全停在 key，door/goal deterministic 与 stochastic success 都为 0。
+- 结论：transition reward 解决第一段 credit，但 DoorKey 的层级控制仍压过当前 semantic objective 问题。
+- 决定：暂停 DoorKey reward/预算调参；先用官方 FrozenLake 4x4、三 outcome、tabular Q-learning 验证最小 public-environment signal。
+
+### D-023：FrozenLake 支持 Semantic Representation，不支持 Spread 必要性
+
+- 日期：2026-07-22
+- 证据：Semantic 与 Semantic spread 均 5/5；Random 与 Raw terminal DIAYN 均 0/5。
+- Raw failure：safe mean 0，goal mean 0.4，画面显示 skills 主要区分多个 hole tiles。
+- 结论：trajectory outcome representation 在本 public fixed map 有效；occupancy entropy 相对 plain semantic 没有额外收益。
+- 下一步：只增加 slippery dynamics，先计算 class-specific controllability ceilings，再定义训练 gate。
+
 ## 实验日志
 
 ### 2026-07-22：项目启动
@@ -1112,3 +1308,27 @@ Hammer 第一版会复用现有 Isaac Lab 轨迹 logger，而不是从零重建�
 
 > [计划]
 > v2b 保持所有条件不变，只把 PPO `ent_coef` 从 0.01 改为 0.0。若仍失败，下一轮直接处理 transition credit/stage stopping，不延长训练或扫描系数。
+
+### 2026-07-22：MiniGrid Balanced Oracle v2b 失败
+
+> [失败记录]
+> `ent_coef=0` 后 deterministic door/goal 仍为 0，stochastic goal success 反而降至 43.8%。Entropy 不是单一根因，停止该方向的系数 sweep。
+
+> [计划]
+> v3 恢复 0.01 entropy，只将 terminal target reward 替换成即时、归一化的 stage-transition potential difference。先写精确单元测试和短 smoke，再运行同一 250k gate。
+
+### 2026-07-22：MiniGrid Stage-Transition v3 失败并降阶
+
+> [失败记录]
+> Immediate potential 让所有 stochastic skills 几乎都学会拿 key，但没有一个学会开门或到 goal。继续调整 DoorKey reward 已无法干净回答 semantic metric 问题。
+
+> [方向变化]
+> DoorKey 后移为 harder benchmark。下一步先实现官方 FrozenLake-v1 固定 4x4 map，以 tabular Q-learning 验证 safe/hole/goal 三类 public graphical outcome；通过后再逐步增加 slippery dynamics 或 layout variation。
+
+### 2026-07-22：FrozenLake Fixed-map Public Gate 通过
+
+> [结果]
+> 环境/scripted/random audit、balanced control、semantic spread 5 seeds 和三组 baseline 全部完成。Semantic 与 spread 均 5/5，Random/Raw 均 0/5；多 seed 画面与数值一致。
+
+> [方向变化]
+> 结论收窄为 semantic outcome representation 有效，不能声称 occupancy term 在该环境必要。下一步只审计 `is_slippery=true` 的 outcome 概率上界，不先套用 deterministic gate。

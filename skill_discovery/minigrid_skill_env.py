@@ -34,6 +34,7 @@ class OnlineIntrinsicReward:
             "semantic",
             "semantic_spread",
             "semantic_balanced",
+            "semantic_balanced_transition",
         }:
             raise ValueError("unknown objective")
         self.objective = objective
@@ -61,6 +62,8 @@ class OnlineIntrinsicReward:
                 "diayn_reward": reward,
                 "coverage_reward": 0.0,
             }
+        if self.objective == "semantic_balanced_transition":
+            return 0.0, {"diayn_reward": 0.0, "coverage_reward": 0.0}
         if self.objective == "raw":
             counts = self.raw_counts.setdefault(
                 raw_feature,
@@ -88,6 +91,30 @@ class OnlineIntrinsicReward:
             "coverage_reward": coverage_reward,
         }
 
+    @staticmethod
+    def _target_potential(stage: int, target: int) -> float:
+        final_stage = len(DOORKEY_STAGES) - 1
+        if target == 0:
+            return 1.0 - stage / final_stage
+        if stage <= target:
+            return stage / target
+        return 1.0 - (stage - target) / (final_stage - target)
+
+    def transition_reward(
+        self,
+        skill: int,
+        previous_stage: int,
+        stage: int,
+    ) -> tuple[float, dict[str, float]]:
+        if self.objective != "semantic_balanced_transition":
+            return 0.0, {"diayn_reward": 0.0, "coverage_reward": 0.0}
+        target = int(self.balanced_targets[skill])
+        reward = self._target_potential(stage, target) - self._target_potential(
+            previous_stage,
+            target,
+        )
+        return reward, {"diayn_reward": reward, "coverage_reward": 0.0}
+
     def state_dict(self) -> dict[str, object]:
         return {
             "objective": self.objective,
@@ -96,7 +123,8 @@ class OnlineIntrinsicReward:
             "episode_counts": self.episode_counts.tolist(),
             "stage_counts": self.stage_counts.tolist(),
             "balanced_targets": self.balanced_targets.tolist()
-            if self.objective == "semantic_balanced"
+            if self.objective
+            in {"semantic_balanced", "semantic_balanced_transition"}
             else None,
         }
 
@@ -174,15 +202,24 @@ class DoorKeySkillWrapper(gym.Wrapper):
             terminated=terminated,
             reward=float(native_reward),
         )
+        previous_stage = self.furthest_stage
         self.furthest_stage = max(self.furthest_stage, stage)
-        training_reward = 0.0
-        reward_parts = {"diayn_reward": 0.0, "coverage_reward": 0.0}
+        training_reward, reward_parts = self.reward_model.transition_reward(
+            self.skill_id,
+            previous_stage,
+            self.furthest_stage,
+        )
         if terminated or truncated:
-            training_reward, reward_parts = self.reward_model.reward(
+            terminal_reward, terminal_parts = self.reward_model.reward(
                 self.skill_id,
                 self.furthest_stage,
                 self._raw_feature(observation),
             )
+            training_reward += terminal_reward
+            reward_parts = {
+                key: reward_parts[key] + terminal_parts[key]
+                for key in reward_parts
+            }
         info = {
             **info,
             "skill_id": self.skill_id,

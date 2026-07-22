@@ -56,6 +56,7 @@ class MiniGridPPOConfig:
             "semantic",
             "semantic_spread",
             "semantic_balanced",
+            "semantic_balanced_transition",
         }:
             raise ValueError("unknown objective")
         if self.num_skills != len(DOORKEY_STAGES):
@@ -340,6 +341,7 @@ def main() -> None:
             "semantic",
             "semantic_spread",
             "semantic_balanced",
+            "semantic_balanced_transition",
         ),
         default="semantic_spread",
     )
