@@ -2866,6 +2866,33 @@ Failure artifact：`outputs/skill_discovery/mountaincar_continuous/visual_datase
 > [里程碑]
 > MountainCar证明了一个重要限制：连续state不等于连续视觉信息。Goal区间有大量不同float positions，但600px Pygame renderer只产生289种画面，无法支撑预注册的512个跨split唯一样本。下一设计必须在运行前按rendered equivalence classes定预算，或改用frame-pair/trajectory variation；不能靠重复帧假装数据量。
 
+## Phase 5ZU：MountainCar Frame-pair Capacity Survey
+
+状态：`预注册；未运行`
+
+本阶段仍不生成正式dataset、不编码DINO、不训练policy。它只审计官方transition对应的`(RGB_t, RGB_t+1)`能否提供足够多的rendered equivalence classes，避免重演Phase 5ZT在采集末尾才发现容量不足。
+
+### 冻结候选关系
+
+- `left_momentum`：next position在`[-1.15,-0.75]`且next velocity `<=-0.005`。
+- `valley_return`：next position在`(-0.75,0)`且next velocity `>=0.005`。
+- `right_climb`：next position在`[0,0.45)`且next velocity `>=0.005`。
+- `native_goal`：官方transition满足position `>=0.45`、velocity `>=0`并native terminated。
+
+每类使用固定class-specific proposal range采8,192个合法`state_t/action/state_t+1`，action始终uniform `[-1,1]`，next state由Phase 5ZS已核对的官方dynamics计算。Renderer只读取两个合法states；不修改geometry，不使用class label改变画面，不把velocity直接编码进像素。
+
+### Capacity Gates
+
+- 每类必须接受严格8,192个合法transitions，state/action均finite且官方class predicate逐条为真。
+- 每类pair hashes至少1,024个，足以支持下一正式协议的reference/audit各256且保留2倍容量余量；统计single-frame hashes作为解释，不拿它替代pair gate。
+- 每类至少95%的pairs满足`frame_t hash != frame_t+1 hash`，避免“velocity有标签但像素完全不动”。
+- 保存每类三组before/after联系表，人工确认运动方向与位置关系；native-goal必须显示car越过flag位置。
+
+若四类全部通过，下一步才预注册balanced frame-pair dataset和`[car_x_t, car_x_t+1-car_x_t]` RGB candidate；任一类失败就停止该四类定义，不降低1,024容量gate或0.005速度阈值。
+
+> [大计划]
+> 四类可并行做CPU渲染，但Pygame全局状态不在线程间共享；实现为四个独立进程或顺序审计。命令运行时用约300秒阻塞等待，不高频检查。
+
 ## Phase 6：迁移到 Hammer
 
 状态：`state-only同步复现完成；视觉gate因renderer硬件阻断未运行`
