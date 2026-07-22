@@ -83,6 +83,22 @@ class DoorKeyTabularTrainerTest(unittest.TestCase):
             self.assertTrue((output_dir / "q_table.npz").exists())
             self.assertTrue((output_dir / "policy_rollout_audit.png").exists())
 
+    def test_8x8_audit_uses_native_render_size(self) -> None:
+        config = DoorKeyTabularConfig(
+            env_id="MiniGrid-DoorKey-8x8-v0",
+            seed=139,
+            episodes=12,
+            horizon=2,
+            evaluation_checkpoints=(4, 8, 12),
+            eval_episodes_per_skill=1,
+            valid_action_mask=True,
+            terminate_on_target=True,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary) / "run"
+            train_run(config, output_dir)
+            self.assertTrue((output_dir / "policy_rollout_audit.png").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -419,21 +419,12 @@ def _write_rollout_audit(
     config: DoorKeyTabularConfig,
     target_rates: list[float],
 ) -> list[dict[str, object]]:
-    frame_size = 160
     columns = 4
     gap = 6
     marker = 9
-    sheet = np.full(
-        (
-            4 * frame_size + 3 * gap,
-            marker + columns * frame_size + (columns - 1) * gap,
-            3,
-        ),
-        255,
-        dtype=np.uint8,
-    )
     colors = ((104, 117, 125), (40, 117, 164), (209, 112, 49), (43, 137, 95))
     manifest = []
+    rollout_frames = []
     for skill in range(4):
         target_stage = config.target_assignment[skill]
         rate = target_rates[skill]
@@ -459,12 +450,9 @@ def _write_rollout_audit(
             rollout = fallback
         frames = rollout.pop("frames")
         indices = np.linspace(0, len(frames) - 1, columns).astype(np.int64)
-        y = skill * (frame_size + gap)
         actual = int(rollout["stage"])
-        sheet[y : y + frame_size, :marker] = colors[actual]
-        for column, index in enumerate(indices):
-            x = marker + column * (frame_size + gap)
-            sheet[y : y + frame_size, x : x + frame_size] = frames[int(index)]
+        selected_frames = [frames[int(index)] for index in indices]
+        rollout_frames.append((actual, selected_frames))
         manifest.append(
             {
                 "skill": skill,
@@ -475,6 +463,28 @@ def _write_rollout_audit(
                 **{key: value for key, value in rollout.items() if key != "stage"},
             }
         )
+    frame_height, frame_width = rollout_frames[0][1][0].shape[:2]
+    if any(
+        frame.shape[:2] != (frame_height, frame_width)
+        for _, frames in rollout_frames
+        for frame in frames
+    ):
+        raise ValueError("DoorKey rollout frames must share one size")
+    sheet = np.full(
+        (
+            4 * frame_height + 3 * gap,
+            marker + columns * frame_width + (columns - 1) * gap,
+            3,
+        ),
+        255,
+        dtype=np.uint8,
+    )
+    for skill, (actual, frames) in enumerate(rollout_frames):
+        y = skill * (frame_height + gap)
+        sheet[y : y + frame_height, :marker] = colors[actual]
+        for column, frame in enumerate(frames):
+            x = marker + column * (frame_width + gap)
+            sheet[y : y + frame_height, x : x + frame_width] = frame
     _write_png(output_dir / "policy_rollout_audit.png", sheet)
     (output_dir / "policy_rollout_manifest.json").write_text(
         json.dumps(manifest, indent=2),
@@ -620,6 +630,7 @@ def train_run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--env-id", default=DoorKeyTabularConfig.env_id)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--episodes", type=int, default=20_000)
     parser.add_argument("--horizon", type=int, default=64)
@@ -635,6 +646,7 @@ def main() -> None:
         else DoorKeyTabularConfig.evaluation_checkpoints
     )
     config = DoorKeyTabularConfig(
+        env_id=args.env_id,
         seed=args.seed,
         episodes=args.episodes,
         horizon=args.horizon,
@@ -645,8 +657,9 @@ def main() -> None:
     )
     mask_tag = "_actionmask" if config.valid_action_mask else ""
     termination_tag = "_optionterm" if config.terminate_on_target else ""
+    size_tag = "8" if "8x8" in config.env_id else "5"
     run_id = (
-        f"doorkey5_tabular_balanced_control{mask_tag}{termination_tag}_"
+        f"doorkey{size_tag}_tabular_balanced_control{mask_tag}{termination_tag}_"
         f"seed{config.seed}_"
         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
